@@ -21,17 +21,19 @@ type ConfigListModel struct {
 	ct       configType
 	cursor   int
 	items    []configItem
-	adding   bool
-	addName  string
-	addPath  string
-	addShow  bool
-	addField int // 0=name, 1=path, 2=visible
-	editing  bool
-	editIdx  int
-	editName string
-	editPath string
-	editShow bool
-	editField int
+	adding    bool
+	addName   string
+	addPath   string
+	addShow   bool
+	addField  int // 0=name, 1=path, 2=visible
+	addCursor int // rune-cursor in the active text field
+	editing   bool
+	editIdx   int
+	editName  string
+	editPath  string
+	editShow  bool
+	editField  int
+	editCursor int
 	deleting bool
 	err      string
 	width    int
@@ -102,6 +104,7 @@ func (m ConfigListModel) Update(msg tea.Msg) (ConfigListModel, tea.Cmd) {
 			m.addPath = ""
 			m.addShow = true
 			m.addField = 0
+			m.addCursor = 0
 			m.err = ""
 		case keyPress(msg, "e"):
 			if len(m.items) > 0 && m.cursor < len(m.items) {
@@ -112,6 +115,7 @@ func (m ConfigListModel) Update(msg tea.Msg) (ConfigListModel, tea.Cmd) {
 				m.editPath = item.Path
 				m.editShow = item.Visible
 				m.editField = 0
+				m.editCursor = runeCount(m.editName)
 				m.err = ""
 			}
 		}
@@ -154,6 +158,15 @@ func (m ConfigListModel) doDelete() (ConfigListModel, tea.Cmd) {
 
 func (m ConfigListModel) handleAdding(msg tea.KeyMsg) (ConfigListModel, tea.Cmd) {
 	fieldCount := 3 // name/path/visible — applies to both source and agent
+	activeText := func() string {
+		switch m.addField {
+		case 0:
+			return m.addName
+		case 1:
+			return m.addPath
+		}
+		return ""
+	}
 	switch {
 	case keyPress(msg, "esc"):
 		m.adding = false
@@ -162,29 +175,52 @@ func (m ConfigListModel) handleAdding(msg tea.KeyMsg) (ConfigListModel, tea.Cmd)
 		return m.doAdd()
 	case keyPress(msg, "down"):
 		m.addField = (m.addField + 1) % fieldCount
+		m.addCursor = runeCount(activeText())
 	case keyPress(msg, "up"):
 		m.addField = (m.addField - 1 + fieldCount) % fieldCount
+		m.addCursor = runeCount(activeText())
+	case keyPress(msg, "left"):
+		if m.addField <= 1 && m.addCursor > 0 {
+			m.addCursor--
+		}
+	case keyPress(msg, "right"):
+		if m.addField <= 1 {
+			if n := runeCount(activeText()); m.addCursor < n {
+				m.addCursor++
+			}
+		}
+	case keyPress(msg, "home", "ctrl+a"):
+		if m.addField <= 1 {
+			m.addCursor = 0
+		}
+	case keyPress(msg, "end", "ctrl+e"):
+		if m.addField <= 1 {
+			m.addCursor = runeCount(activeText())
+		}
 	case keyPress(msg, "backspace"):
 		switch m.addField {
 		case 0:
-			if len(m.addName) > 0 {
-				m.addName = m.addName[:len(m.addName)-1]
-			}
+			m.addName, m.addCursor = deleteBefore(m.addName, m.addCursor)
 		case 1:
-			if len(m.addPath) > 0 {
-				m.addPath = m.addPath[:len(m.addPath)-1]
-			}
+			m.addPath, m.addCursor = deleteBefore(m.addPath, m.addCursor)
 		case 2:
 			m.addShow = !m.addShow
+		}
+	case keyPress(msg, "delete"):
+		switch m.addField {
+		case 0:
+			m.addName, m.addCursor = deleteAfter(m.addName, m.addCursor)
+		case 1:
+			m.addPath, m.addCursor = deleteAfter(m.addPath, m.addCursor)
 		}
 	default:
 		ch := msg.String()
 		if len(ch) == 1 {
 			switch m.addField {
 			case 0:
-				m.addName += ch
+				m.addName, m.addCursor = insertAt(m.addName, m.addCursor, ch)
 			case 1:
-				m.addPath += ch
+				m.addPath, m.addCursor = insertAt(m.addPath, m.addCursor, ch)
 			case 2:
 				m.addShow = !m.addShow
 			}
@@ -195,6 +231,15 @@ func (m ConfigListModel) handleAdding(msg tea.KeyMsg) (ConfigListModel, tea.Cmd)
 
 func (m ConfigListModel) handleEditing(msg tea.KeyMsg) (ConfigListModel, tea.Cmd) {
 	fieldCount := 3
+	activeText := func() string {
+		switch m.editField {
+		case 0:
+			return m.editName
+		case 1:
+			return m.editPath
+		}
+		return ""
+	}
 	switch {
 	case keyPress(msg, "esc"):
 		m.editing = false
@@ -203,29 +248,52 @@ func (m ConfigListModel) handleEditing(msg tea.KeyMsg) (ConfigListModel, tea.Cmd
 		return m.doEdit()
 	case keyPress(msg, "down"):
 		m.editField = (m.editField + 1) % fieldCount
+		m.editCursor = runeCount(activeText())
 	case keyPress(msg, "up"):
 		m.editField = (m.editField - 1 + fieldCount) % fieldCount
+		m.editCursor = runeCount(activeText())
+	case keyPress(msg, "left"):
+		if m.editField <= 1 && m.editCursor > 0 {
+			m.editCursor--
+		}
+	case keyPress(msg, "right"):
+		if m.editField <= 1 {
+			if n := runeCount(activeText()); m.editCursor < n {
+				m.editCursor++
+			}
+		}
+	case keyPress(msg, "home", "ctrl+a"):
+		if m.editField <= 1 {
+			m.editCursor = 0
+		}
+	case keyPress(msg, "end", "ctrl+e"):
+		if m.editField <= 1 {
+			m.editCursor = runeCount(activeText())
+		}
 	case keyPress(msg, "backspace"):
 		switch m.editField {
 		case 0:
-			if len(m.editName) > 0 {
-				m.editName = m.editName[:len(m.editName)-1]
-			}
+			m.editName, m.editCursor = deleteBefore(m.editName, m.editCursor)
 		case 1:
-			if len(m.editPath) > 0 {
-				m.editPath = m.editPath[:len(m.editPath)-1]
-			}
+			m.editPath, m.editCursor = deleteBefore(m.editPath, m.editCursor)
 		case 2:
 			m.editShow = !m.editShow
+		}
+	case keyPress(msg, "delete"):
+		switch m.editField {
+		case 0:
+			m.editName, m.editCursor = deleteAfter(m.editName, m.editCursor)
+		case 1:
+			m.editPath, m.editCursor = deleteAfter(m.editPath, m.editCursor)
 		}
 	default:
 		ch := msg.String()
 		if len(ch) == 1 {
 			switch m.editField {
 			case 0:
-				m.editName += ch
+				m.editName, m.editCursor = insertAt(m.editName, m.editCursor, ch)
 			case 1:
-				m.editPath += ch
+				m.editPath, m.editCursor = insertAt(m.editPath, m.editCursor, ch)
 			case 2:
 				m.editShow = !m.editShow
 			}
@@ -443,9 +511,9 @@ func (m ConfigListModel) renderAddPopup() string {
 	}
 
 	type field struct {
-		label  string
-		value  string
-		cursor bool // append blinking-block hint after value
+		label    string
+		value    string
+		editable bool // text field with a movable cursor
 	}
 	fields := []field{
 		{"名称", m.addName, true},
@@ -457,10 +525,11 @@ func (m ConfigListModel) renderAddPopup() string {
 	lines = append(lines, titleStyle.Render(fmt.Sprintf("新增%s", m.label())))
 	lines = append(lines, "")
 	for i, f := range fields {
-		text := fmt.Sprintf("%s: %s", f.label, f.value)
-		if f.cursor && i == m.addField {
-			text += "█"
+		value := f.value
+		if f.editable && i == m.addField {
+			value = renderWithCursor(f.value, m.addCursor)
 		}
+		text := fmt.Sprintf("%s: %s", f.label, value)
 		if i == m.addField {
 			text = activeStyle.Render(text)
 		} else {
@@ -496,9 +565,9 @@ func (m ConfigListModel) renderEditPopup() string {
 	}
 
 	type field struct {
-		label  string
-		value  string
-		cursor bool
+		label    string
+		value    string
+		editable bool
 	}
 	fields := []field{
 		{"名称", m.editName, true},
@@ -510,10 +579,11 @@ func (m ConfigListModel) renderEditPopup() string {
 	lines = append(lines, titleStyle.Render(fmt.Sprintf("编辑%s", m.label())))
 	lines = append(lines, "")
 	for i, f := range fields {
-		text := fmt.Sprintf("%s: %s", f.label, f.value)
-		if f.cursor && i == m.editField {
-			text += "█"
+		value := f.value
+		if f.editable && i == m.editField {
+			value = renderWithCursor(f.value, m.editCursor)
 		}
+		text := fmt.Sprintf("%s: %s", f.label, value)
 		if i == m.editField {
 			text = activeStyle.Render(text)
 		} else {

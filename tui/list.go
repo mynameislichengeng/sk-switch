@@ -1096,3 +1096,65 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// runeCount returns the number of runes in s.
+func runeCount(s string) int { return len([]rune(s)) }
+
+// clampCursor clamps a rune-index cursor to [0, runeCount(s)].
+func clampCursor(s string, cursor int) int {
+	n := runeCount(s)
+	if cursor < 0 {
+		return 0
+	}
+	if cursor > n {
+		return n
+	}
+	return cursor
+}
+
+// insertAt inserts ch at the rune-cursor position in s and returns the new
+// string and the cursor advanced past the inserted runes.
+func insertAt(s string, cursor int, ch string) (string, int) {
+	r := []rune(s)
+	cursor = clampCursor(s, cursor)
+	cr := []rune(ch)
+	out := make([]rune, 0, len(r)+len(cr))
+	out = append(out, r[:cursor]...)
+	out = append(out, cr...)
+	out = append(out, r[cursor:]...)
+	return string(out), cursor + len(cr)
+}
+
+// deleteBefore removes the rune immediately before the cursor (backspace).
+func deleteBefore(s string, cursor int) (string, int) {
+	r := []rune(s)
+	cursor = clampCursor(s, cursor)
+	if cursor == 0 {
+		return s, 0
+	}
+	out := make([]rune, 0, len(r)-1)
+	out = append(out, r[:cursor-1]...)
+	out = append(out, r[cursor:]...)
+	return string(out), cursor - 1
+}
+
+// deleteAfter removes the rune at the cursor (forward delete).
+func deleteAfter(s string, cursor int) (string, int) {
+	r := []rune(s)
+	cursor = clampCursor(s, cursor)
+	if cursor >= len(r) {
+		return s, cursor
+	}
+	out := make([]rune, 0, len(r)-1)
+	out = append(out, r[:cursor]...)
+	out = append(out, r[cursor+1:]...)
+	return string(out), cursor
+}
+
+// renderWithCursor inserts a cursor block at the rune-cursor position. When
+// the cursor sits past the last rune, the block is appended.
+func renderWithCursor(s string, cursor int) string {
+	r := []rune(s)
+	cursor = clampCursor(s, cursor)
+	return string(r[:cursor]) + "█" + string(r[cursor:])
+}

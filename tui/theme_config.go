@@ -17,11 +17,12 @@ import (
 type ThemeConfigModel struct {
 	cfg     config.ThemeConfig
 	cursor  int // 0..len(themeRows)-1
-	editing bool
-	editIdx int
-	editLight string
-	editDark  string
-	editField int // 0=light 1=dark
+	editing    bool
+	editIdx    int
+	editLight  string
+	editDark   string
+	editField  int // 0=light 1=dark
+	editCursor int // rune-cursor in the active text field
 	loadErr   string
 	err       string
 	flash     string
@@ -92,12 +93,19 @@ func (m ThemeConfigModel) Update(msg tea.Msg) (ThemeConfigModel, tea.Cmd) {
 		m.editLight = p.Light
 		m.editDark = p.Dark
 		m.editField = 0
+		m.editCursor = runeCount(m.editLight)
 		m.err = ""
 	}
 	return m, nil
 }
 
 func (m ThemeConfigModel) handleEditing(km tea.KeyMsg) (ThemeConfigModel, tea.Cmd) {
+	activeText := func() string {
+		if m.editField == 0 {
+			return m.editLight
+		}
+		return m.editDark
+	}
 	switch {
 	case keyPress(km, "esc"):
 		m.editing = false
@@ -107,21 +115,45 @@ func (m ThemeConfigModel) handleEditing(km tea.KeyMsg) (ThemeConfigModel, tea.Cm
 		return m.commit()
 	case keyPress(km, "down"), keyPress(km, "up"):
 		m.editField = 1 - m.editField
+		m.editCursor = runeCount(activeText())
+		return m, nil
+	case keyPress(km, "left"):
+		if m.editCursor > 0 {
+			m.editCursor--
+		}
+		return m, nil
+	case keyPress(km, "right"):
+		if n := runeCount(activeText()); m.editCursor < n {
+			m.editCursor++
+		}
+		return m, nil
+	case keyPress(km, "home", "ctrl+a"):
+		m.editCursor = 0
+		return m, nil
+	case keyPress(km, "end", "ctrl+e"):
+		m.editCursor = runeCount(activeText())
 		return m, nil
 	case keyPress(km, "backspace"):
 		if m.editField == 0 {
-			m.editLight = trimLastRune(m.editLight)
+			m.editLight, m.editCursor = deleteBefore(m.editLight, m.editCursor)
 		} else {
-			m.editDark = trimLastRune(m.editDark)
+			m.editDark, m.editCursor = deleteBefore(m.editDark, m.editCursor)
+		}
+		return m, nil
+	case keyPress(km, "delete"):
+		if m.editField == 0 {
+			m.editLight, m.editCursor = deleteAfter(m.editLight, m.editCursor)
+		} else {
+			m.editDark, m.editCursor = deleteAfter(m.editDark, m.editCursor)
 		}
 		return m, nil
 	}
 	ch := km.String()
 	if len(ch) == 1 {
 		if m.editField == 0 {
-			m.editLight += ch
+			m.editLight, m.editCursor = insertAt(m.editLight, m.editCursor, ch)
 		} else {
-			m.editDark += ch
+			m.editDark, m.editCursor = insertAt(m.editDark, m.editCursor, ch)
 		}
 	}
 	return m, nil
@@ -218,8 +250,15 @@ func (m ThemeConfigModel) renderEditPopup() string {
 	lines = append(lines, lipgloss.NewStyle().Faint(true).Render("Token: "+row.label))
 	lines = append(lines, "")
 
-	lightLine := fmt.Sprintf("Light: %s%s", m.editLight, cursorBlock(m.editField == 0))
-	darkLine := fmt.Sprintf("Dark:  %s%s", m.editDark, cursorBlock(m.editField == 1))
+	lightVal := m.editLight
+	darkVal := m.editDark
+	if m.editField == 0 {
+		lightVal = renderWithCursor(m.editLight, m.editCursor)
+	} else {
+		darkVal = renderWithCursor(m.editDark, m.editCursor)
+	}
+	lightLine := fmt.Sprintf("Light: %s", lightVal)
+	darkLine := fmt.Sprintf("Dark:  %s", darkVal)
 	if m.editField == 0 {
 		lightLine = popupActiveStyle.Render(lightLine)
 		darkLine = lipgloss.NewStyle().Faint(true).Render(darkLine)
@@ -254,13 +293,6 @@ func (m ThemeConfigModel) renderEditPopup() string {
 	return box
 }
 
-func cursorBlock(active bool) string {
-	if active {
-		return "█"
-	}
-	return ""
-}
-
 // colorSwatch renders two cells filled with the given color so the user sees
 // the actual hex value in addition to the string. Falls back gracefully if
 // hex is invalid (returns spaces).
@@ -269,12 +301,4 @@ func colorSwatch(hex string) string {
 		return "  "
 	}
 	return lipgloss.NewStyle().Background(lipgloss.Color(hex)).Render("  ")
-}
-
-func trimLastRune(s string) string {
-	r := []rune(s)
-	if len(r) == 0 {
-		return s
-	}
-	return string(r[:len(r)-1])
 }
