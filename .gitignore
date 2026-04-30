@@ -4,3 +4,9 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Binary
+sk-switch
+
+# Local Claude Code context (per-machine, not shared)
+.claude.local.json
