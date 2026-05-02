@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,13 +11,25 @@ import (
 //
 // UI reads exclusively from the Store; disk is only touched by Refresh()
 // (re-scan) or by the mutation methods below (which call Refresh themselves).
+//
+// Two domains live side-by-side: SKILLS (sources/agents/skills/assignments,
+// scanned from filesystem) and MCP (mcps/mcpAgents, fully driven by
+// mcp-data.json + mcp-agents.json — the actual per-agent files are written
+// reactively by AssignMCP/UnassignMCP).
 type Store struct {
-	mu          sync.RWMutex
+	mu sync.RWMutex
+
+	// SKILLS
 	sources     []DataSource
 	agents      []Agent
 	skills      []Skill
 	assignments map[string]map[string]bool // skill.Key() -> agent.Name -> assigned
-	runtime     *Runtime
+
+	// MCP
+	mcps      []MCP
+	mcpAgents []MCPAgent
+
+	runtime *Runtime
 }
 
 func NewStore() *Store {
@@ -59,11 +72,21 @@ func (s *Store) Init() error {
 	if err != nil {
 		return err
 	}
+	mcps, err := loadMCPs()
+	if err != nil {
+		return err
+	}
+	mcpAgents, err := loadMCPAgents()
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	s.runtime = rt
 	s.sources = sources
 	s.agents = agents
+	s.mcps = mcps
+	s.mcpAgents = mcpAgents
 	s.mu.Unlock()
 
 	return s.Refresh()
@@ -344,4 +367,450 @@ func (s *Store) RemoveAgent(idx int) error {
 		return err
 	}
 	return s.Refresh()
+}
+
+// ───── MCP read API ─────
+
+func (s *Store) MCPs() []MCP {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]MCP, len(s.mcps))
+	for i, m := range s.mcps {
+		out[i] = cloneMCP(m)
+	}
+	return out
+}
+
+func (s *Store) MCPAgents() []MCPAgent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]MCPAgent, len(s.mcpAgents))
+	copy(out, s.mcpAgents)
+	return out
+}
+
+func (s *Store) VisibleMCPAgents() []MCPAgent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []MCPAgent
+	for _, a := range s.mcpAgents {
+		if a.Visible {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// MCPByName returns the MCP with the given name and its index, or
+// (MCP{}, -1) when not found.
+func (s *Store) MCPByName(name string) (MCP, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i, m := range s.mcps {
+		if m.Name == name {
+			return cloneMCP(m), i
+		}
+	}
+	return MCP{}, -1
+}
+
+// IsMCPAssigned consults mcp-data.json (the source of truth), not the
+// agent's actual file. See AssignMCP for the reconcile rules.
+func (s *Store) IsMCPAssigned(mcpName, agentName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.mcps {
+		if m.Name != mcpName {
+			continue
+		}
+		for _, a := range m.Assignments {
+			if a == agentName {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// MCPHasAssignments reports whether the named MCP has at least one
+// assignment recorded — gates editing/deletion in the strict mode.
+func (s *Store) MCPHasAssignments(mcpName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.mcps {
+		if m.Name == mcpName {
+			return len(m.Assignments) > 0
+		}
+	}
+	return false
+}
+
+// MCPAgentInUse reports whether any MCP is assigned to the named agent.
+// Used to gate MCPAgent removal.
+func (s *Store) MCPAgentInUse(agentName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.mcps {
+		for _, a := range m.Assignments {
+			if a == agentName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ───── MCP mutation API ─────
+
+func (s *Store) AddMCP(mcp MCP) error {
+	mcp.Name = normalizeMCPName(mcp.Name)
+	mcp.GithubURL = normalizeGithub(mcp.GithubURL)
+	if mcp.Name == "" {
+		return fmt.Errorf("名称不能为空")
+	}
+	if err := ValidateMCPConfig(mcp.Config); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	for _, existing := range s.mcps {
+		if existing.Name == mcp.Name {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrMCPNameExists, mcp.Name)
+		}
+		if mcp.GithubURL != "" && existing.GithubURL == mcp.GithubURL {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q (已被 %q 占用)", ErrMCPGithubExists, mcp.GithubURL, existing.Name)
+		}
+	}
+	mcp.Assignments = nil // never trust caller-supplied state
+	s.mcps = append(s.mcps, mcp)
+	snap := cloneMCPs(s.mcps)
+	s.mu.Unlock()
+	return saveMCPs(snap)
+}
+
+// UpdateMCP replaces the MCP at idx. Strict-edit policy: caller must check
+// MCPHasAssignments() first; this method will reject any change to a
+// currently-assigned MCP regardless.
+func (s *Store) UpdateMCP(idx int, mcp MCP) error {
+	mcp.Name = normalizeMCPName(mcp.Name)
+	mcp.GithubURL = normalizeGithub(mcp.GithubURL)
+	if mcp.Name == "" {
+		return fmt.Errorf("名称不能为空")
+	}
+	if err := ValidateMCPConfig(mcp.Config); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if idx < 0 || idx >= len(s.mcps) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: 索引 %d 越界", ErrMCPNotFound, idx)
+	}
+	current := s.mcps[idx]
+	if len(current.Assignments) > 0 {
+		s.mu.Unlock()
+		return ErrMCPHasAssignments
+	}
+	for i, existing := range s.mcps {
+		if i == idx {
+			continue
+		}
+		if existing.Name == mcp.Name {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrMCPNameExists, mcp.Name)
+		}
+		if mcp.GithubURL != "" && existing.GithubURL == mcp.GithubURL {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: %q (已被 %q 占用)", ErrMCPGithubExists, mcp.GithubURL, existing.Name)
+		}
+	}
+	mcp.Assignments = current.Assignments // preserve (should be empty per check above)
+	s.mcps[idx] = mcp
+	snap := cloneMCPs(s.mcps)
+	s.mu.Unlock()
+	return saveMCPs(snap)
+}
+
+// RemoveMCP removes the MCP at idx. Returns ErrMCPHasAssignments if any
+// agent has it assigned.
+func (s *Store) RemoveMCP(idx int) error {
+	s.mu.Lock()
+	if idx < 0 || idx >= len(s.mcps) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: 索引 %d 越界", ErrMCPNotFound, idx)
+	}
+	if len(s.mcps[idx].Assignments) > 0 {
+		s.mu.Unlock()
+		return ErrMCPHasAssignments
+	}
+	s.mcps = append(s.mcps[:idx], s.mcps[idx+1:]...)
+	snap := cloneMCPs(s.mcps)
+	s.mu.Unlock()
+	return saveMCPs(snap)
+}
+
+// ───── MCP agent mutation API ─────
+
+func (s *Store) AddMCPAgent(ag MCPAgent) error {
+	ag.Name = strings.TrimSpace(ag.Name)
+	ag.Path = NormalizePath(ag.Path)
+	ag.Type = strings.TrimSpace(ag.Type)
+	if ag.Name == "" {
+		return fmt.Errorf("名称不能为空")
+	}
+	if ag.Path == "" {
+		return fmt.Errorf("路径不能为空")
+	}
+	if _, err := MCPWriterFor(ag.Type); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	for _, existing := range s.mcpAgents {
+		if existing.Name == ag.Name {
+			s.mu.Unlock()
+			return fmt.Errorf("名称 %q 已存在", ag.Name)
+		}
+	}
+	s.mcpAgents = append(s.mcpAgents, ag)
+	snap := make([]MCPAgent, len(s.mcpAgents))
+	copy(snap, s.mcpAgents)
+	s.mu.Unlock()
+	return saveMCPAgents(snap)
+}
+
+func (s *Store) UpdateMCPAgent(idx int, ag MCPAgent) error {
+	ag.Name = strings.TrimSpace(ag.Name)
+	ag.Path = NormalizePath(ag.Path)
+	ag.Type = strings.TrimSpace(ag.Type)
+	if ag.Name == "" {
+		return fmt.Errorf("名称不能为空")
+	}
+	if ag.Path == "" {
+		return fmt.Errorf("路径不能为空")
+	}
+	if _, err := MCPWriterFor(ag.Type); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if idx < 0 || idx >= len(s.mcpAgents) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: 索引 %d 越界", ErrMCPAgentNotFound, idx)
+	}
+	oldName := s.mcpAgents[idx].Name
+	for i, existing := range s.mcpAgents {
+		if i == idx {
+			continue
+		}
+		if existing.Name == ag.Name {
+			s.mu.Unlock()
+			return fmt.Errorf("名称 %q 已存在", ag.Name)
+		}
+	}
+	s.mcpAgents[idx] = ag
+	// If the agent was renamed, propagate to mcps' Assignments lists.
+	if oldName != ag.Name {
+		for i := range s.mcps {
+			for j, a := range s.mcps[i].Assignments {
+				if a == oldName {
+					s.mcps[i].Assignments[j] = ag.Name
+				}
+			}
+		}
+	}
+	agSnap := make([]MCPAgent, len(s.mcpAgents))
+	copy(agSnap, s.mcpAgents)
+	mcpSnap := cloneMCPs(s.mcps)
+	s.mu.Unlock()
+	if err := saveMCPAgents(agSnap); err != nil {
+		return err
+	}
+	if oldName != ag.Name {
+		return saveMCPs(mcpSnap)
+	}
+	return nil
+}
+
+// RemoveMCPAgent removes the agent at idx. Returns ErrMCPAgentInUse if any
+// MCP is currently assigned to it (the user must Unassign first).
+func (s *Store) RemoveMCPAgent(idx int) error {
+	s.mu.Lock()
+	if idx < 0 || idx >= len(s.mcpAgents) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: 索引 %d 越界", ErrMCPAgentNotFound, idx)
+	}
+	name := s.mcpAgents[idx].Name
+	for _, m := range s.mcps {
+		for _, a := range m.Assignments {
+			if a == name {
+				s.mu.Unlock()
+				return ErrMCPAgentInUse
+			}
+		}
+	}
+	s.mcpAgents = append(s.mcpAgents[:idx], s.mcpAgents[idx+1:]...)
+	snap := make([]MCPAgent, len(s.mcpAgents))
+	copy(snap, s.mcpAgents)
+	s.mu.Unlock()
+	return saveMCPAgents(snap)
+}
+
+// ───── MCP assignment API ─────
+
+// AssignMCP records mcpName as assigned to agentName, writing the agent's
+// config file as needed.
+//
+// Reconcile rules (the user-defined contract):
+//   - existing key with same payload → just record in mcp-data.json (no write).
+//   - existing key with different payload → return *MCPConflict (caller can
+//     ask the user, then call again with force=true to overwrite).
+//   - missing key → write it + record.
+//
+// agent file missing entirely → ErrMCPFileMissing surfaces unchanged.
+func (s *Store) AssignMCP(mcpName, agentName string, force bool) error {
+	s.mu.Lock()
+	mcpIdx := -1
+	for i, m := range s.mcps {
+		if m.Name == mcpName {
+			mcpIdx = i
+			break
+		}
+	}
+	if mcpIdx < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrMCPNotFound, mcpName)
+	}
+	var agent MCPAgent
+	found := false
+	for _, a := range s.mcpAgents {
+		if a.Name == agentName {
+			agent = a
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrMCPAgentNotFound, agentName)
+	}
+	mcp := cloneMCP(s.mcps[mcpIdx])
+	s.mu.Unlock()
+
+	writer, err := MCPWriterFor(agent.Type)
+	if err != nil {
+		return err
+	}
+	existing, readErr := writer.Read(agent.Path, mcpName)
+	if readErr != nil && readErr != ErrMCPFileMissing {
+		return readErr
+	}
+	if existing != nil && !equivalentJSON(existing, mcp.Config) && !force {
+		return &MCPConflict{
+			MCPName:     mcpName,
+			AgentName:   agentName,
+			ExistingRaw: existing,
+			NewRaw:      mcp.Config,
+		}
+	}
+	// Write only when the file lacks the key or the user opted to overwrite.
+	if existing == nil || (existing != nil && !equivalentJSON(existing, mcp.Config)) {
+		if readErr == ErrMCPFileMissing {
+			return readErr
+		}
+		if err := writer.Write(agent.Path, mcpName, mcp.Config); err != nil {
+			return err
+		}
+	}
+	return s.recordAssignment(mcpName, agentName, true)
+}
+
+// UnassignMCP removes agentName from mcpName's Assignments and deletes the
+// matching entry from the agent's config file. Per user spec: if the file
+// already lacks the key, just update mcp-data.json (no error).
+func (s *Store) UnassignMCP(mcpName, agentName string) error {
+	s.mu.Lock()
+	var agent MCPAgent
+	for _, a := range s.mcpAgents {
+		if a.Name == agentName {
+			agent = a
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	if agent.Name != "" {
+		writer, err := MCPWriterFor(agent.Type)
+		if err != nil {
+			return err
+		}
+		// Best effort: file missing or key already gone → still update record.
+		if err := writer.Delete(agent.Path, mcpName); err != nil && err != ErrMCPFileMissing {
+			return err
+		}
+	}
+	return s.recordAssignment(mcpName, agentName, false)
+}
+
+// recordAssignment updates mcp-data.json's assignments list. assigned=true
+// adds, false removes; both are idempotent.
+func (s *Store) recordAssignment(mcpName, agentName string, assigned bool) error {
+	s.mu.Lock()
+	idx := -1
+	for i, m := range s.mcps {
+		if m.Name == mcpName {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrMCPNotFound, mcpName)
+	}
+	cur := s.mcps[idx].Assignments
+	out := cur[:0:0]
+	already := false
+	for _, a := range cur {
+		if a == agentName {
+			already = true
+			if !assigned {
+				continue // dropping
+			}
+		}
+		out = append(out, a)
+	}
+	if assigned && !already {
+		out = append(out, agentName)
+	}
+	s.mcps[idx].Assignments = out
+	snap := cloneMCPs(s.mcps)
+	s.mu.Unlock()
+	return saveMCPs(snap)
+}
+
+// cloneMCP makes a deep copy so mutations to the returned MCP don't leak
+// into the Store-held slice. Config is a RawMessage (immutable bytes), so
+// only Assignments needs explicit copy.
+func cloneMCP(m MCP) MCP {
+	out := m
+	if m.Assignments != nil {
+		out.Assignments = make([]string, len(m.Assignments))
+		copy(out.Assignments, m.Assignments)
+	}
+	if m.Config != nil {
+		out.Config = make(json.RawMessage, len(m.Config))
+		copy(out.Config, m.Config)
+	}
+	return out
+}
+
+func cloneMCPs(in []MCP) []MCP {
+	out := make([]MCP, len(in))
+	for i, m := range in {
+		out[i] = cloneMCP(m)
+	}
+	return out
 }
