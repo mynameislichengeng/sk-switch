@@ -1,0 +1,111 @@
+# MCP 模块 · AGENTS 配置 tab
+
+实现：`tui/mcp_agents.go` + `tui/mcp_agent_assign.go`
+
+> ⚠ 这一份"AGENTS 配置"与 SKILLS 模块下的"agent 配置"**完全独立**——
+> SKILLS 用 `~/.config/sk-switch/agents.json`，MCP 用 `~/.config/sk-switch/mcp-agents.json`，
+> 互不影响。
+
+## 列表字段
+
+| 列 | 内容 |
+|----|------|
+| `#` | 序号 |
+| 名称 | 用户起的别名（如 `claude-code`、`codex`）|
+| 类型 | 写入器类型（决定文件格式）。当前只有 `claude-json` |
+| 配置文件路径 | 该 agent 的 mcp 配置文件（如 `~/.claude/.claude.json`）|
+| 已分配 | 当前指向该 agent 的 MCP 数量 |
+| 是否开启 | `开启`/`关闭`；只有"开启"的 agent 会出现在 MCP 列表的 agent 列里 |
+
+## 快捷键
+
+| 按键 | 功能 |
+|------|------|
+| `↑` `↓` `j` `k` | 移动光标 |
+| `a` | 新增 agent |
+| `e` | 编辑当前选中 |
+| `d` | 删除当前选中（已被分配 → 提示先取消分配）|
+| `空格` | **分配 MCP 给当前选中 agent**（双向入口）|
+| `r` `Tab` `Ctrl+P` `q` | 全局键 |
+
+## 表单（新增/编辑）
+
+| 字段 | 类型 | 校验 |
+|------|------|------|
+| 名称 | 单行 | 必填、唯一 |
+| 类型 | 在已注册的 writer 类型间循环（空格/Enter 切换）| 当前固定 `claude-json` |
+| 路径 | 单行 | 必填；指向**单个 JSON 文件**（不是目录） |
+| 开启 | 布尔 | 空格/Enter 切换 |
+
+> 路径是否真实存在不在表单层强校验——分配 MCP 时如果文件缺失会报 `ErrMCPFileMissing`，
+> 用户能立即看到错误信息再回来修改。
+
+### 表单快捷键
+
+| 按键 | 功能 |
+|------|------|
+| `Tab` `Shift+Tab` `↑` `↓` | 切字段 |
+| `Ctrl+S` | 提交 |
+| `Esc` | 取消 |
+| `←` `→` `Home` `End` `Backspace` `Delete` | 单行编辑 |
+| `空格` `Enter` | 在"类型"/"开启"字段上 = toggle |
+
+### 重命名时的副作用
+
+UpdateMCPAgent 会把 `mcp-data.json` 中所有 MCP 的 `assignments` 字段里出现的旧 agent 名同步替换成新名——避免分配关系断链。**实际 agent 文件不会被改动**（旧文件可能被孤立，由用户自行清理）。
+
+## 删除规则
+
+- 删除 agent 前，**Store 层**会拦截（`ErrMCPAgentInUse`）：只要它名下有 MCP，就拒绝删除
+- 二次确认弹窗会**预检**并提示"该 agent 上仍有 MCP 分配，请先取消分配"
+- 真正删除时不会修改 agent 的实际配置文件（agent 都没了，留着或不留是用户的事）
+
+## 空格 · 分配 MCP 弹窗
+
+显示：
+- Agent 信息（Name / Type / Path）
+- MCP 列表（每行：`[Y]`/`[-]` + name + github）
+- 错误行（如冲突 / 写盘失败）
+
+### 弹窗内快捷键
+
+| 按键 | 功能 |
+|------|------|
+| `↑` `↓` `j` `k` | 选 MCP |
+| `空格` | **toggle 分配** —— 立即生效（不像 SKILLS 用 draft+confirm）|
+| `Esc` | 关闭 |
+
+### 分配 reconcile 规则（用户合同）
+
+按空格 toggle 时，逻辑分支：
+
+| 当前状态 | 实际文件 | 行为 |
+|---------|---------|------|
+| 未分配 → 分配 | 没有此 key | 写入文件 + 记录到 `mcp-data.json` |
+| 未分配 → 分配 | 有 key 且 config 相同（结构等价）| **不写文件**，仅记录到 `mcp-data.json` |
+| 未分配 → 分配 | 有 key 但 config 不同 | 弹**冲突确认**子弹窗（见下） |
+| 已分配 → 取消分配 | 有 key | 删文件中的 key + 清记录 |
+| 已分配 → 取消分配 | 没有 key（漂移）| **不动文件**，仅清记录 |
+
+JSON 等价比较：通过 `json.Unmarshal` 解析后再 `json.Marshal`（Go 标准库对 map key 字典序排序），逐字节对比。"格式不同但结构相同" 会被识别为相同。
+
+### 冲突子弹窗
+
+显示文件中现有的 config + 我们要写的 config 两份，对比后让用户决定：
+
+| 按键 | 功能 |
+|------|------|
+| `Enter` | 强制覆盖（用 sk-switch 版本写入） |
+| `Esc` | 取消（不动文件，不记录分配） |
+
+## 写盘安全保证（来自 `config/mcp_writer_claude.go`）
+
+每次 `Write`/`Delete`：
+1. 读整个 JSON 文件 → `map[string]json.RawMessage`（保留所有 key 的 raw 字节）
+2. 仅修改 `mcpServers` 子 map 里的目标 key
+3. `MarshalIndent(top, "", "  ")` 序列化
+4. 写到同目录 `.sk-switch-mcp-*.tmp` → `os.Rename` 替换（原子）
+5. 失败时 tmp 自动删除，原文件不受影响
+6. 文件 mode 保留（`os.Stat` → `os.Chmod`）
+
+`~/.claude/.claude.json` 里**所有非 `mcpServers` 的字段**（会话历史、projects、userId 等）原样保留。

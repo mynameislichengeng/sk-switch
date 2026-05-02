@@ -32,10 +32,12 @@ sk-switch/
 │   ├── runtime.go          # runtime-config.yaml (含 last_module)
 │   ├── theme.go            # theme.yaml (全局色板)
 │   ├── scan.go             # Skill 结构 + scanOneSource + isAssigned
-│   ├── mcp.go              # 🚧 MCP 结构 + mcp-data.json (commit 2)
-│   ├── mcp_agent.go        # 🚧 MCPAgent 结构 + mcp-agents.json (commit 2)
-│   ├── mcp_writer.go       # 🚧 MCPWriter 接口 + 注册表 (commit 2)
-│   ├── mcp_writer_claude.go # 🚧 claude-json writer (commit 2)
+│   ├── mcp.go              # MCP 结构 + mcp-data.json + 校验/工具
+│   ├── mcp_agent.go        # MCPAgent 结构 + mcp-agents.json
+│   ├── mcp_writer.go       # MCPWriter 接口 + 注册表 + atomic write
+│   ├── mcp_writer_claude.go # claude-json 实现（操作 ~/.claude/.claude.json）
+│   ├── mcp_writer_claude_test.go # 写入器单测（10 个）
+│   ├── store_mcp_test.go   # Store MCP 操作单测（14 个）
 │   └── store.go            # Store —— 运行时唯一查询源（含 SKILLS + MCP + Runtime）
 ├── tui/
 │   ├── tui.go              # 主模型 / 模块+Tab 双层路由 / 入口弹窗调度
@@ -46,8 +48,12 @@ sk-switch/
 │   ├── skill_view.go       # SKILLS · 技能详情（glamour 渲染 SKILL.md）
 │   ├── install.go          # SKILLS · 技能安装（占位）
 │   ├── config_list.go      # SKILLS · 数据源 / agent 配置（共用 ConfigListModel）
-│   ├── mcp_list.go         # MCP · 列表（commit 1 占位 → commit 3 实现）
-│   ├── mcp_agents.go       # MCP · AGENTS 配置（commit 1 占位 → commit 4 实现）
+│   ├── mcp_list.go         # MCP · 列表 + 路由
+│   ├── mcp_form.go         # MCP · 新增/编辑表单（含 textarea 多行 JSON）
+│   ├── mcp_view.go         # MCP · 空格只读查看弹窗
+│   ├── mcp_blocked.go      # MCP · "已分配 — 无法 编辑/删除" 阻塞弹窗
+│   ├── mcp_agents.go       # MCP · AGENTS 配置 + 表单
+│   ├── mcp_agent_assign.go # MCP · agent 上按空格分配 MCP 弹窗 + 冲突弹窗
 │   └── theme_config.go     # SETTINGS · 主题配置
 └── docs/
     ├── ui设计原则.md
@@ -70,10 +76,10 @@ sk-switch/
 
 ## MCP 模块（2 个 Tab）
 
-| Tab | 名称 | 文件 | 状态 |
-|-----|------|------|------|
-| 1 | MCP 列表 | `tui/mcp_list.go` | 🚧 commit 3 |
-| 2 | AGENTS 配置 | `tui/mcp_agents.go` | 🚧 commit 4 |
+| Tab | 名称 | 文件 | 状态 | 详细文档 |
+|-----|------|------|------|---------|
+| 1 | MCP 列表 | `tui/mcp_list.go` | ✅ | [tab-MCP列表.md](docs/tab-MCP列表.md) |
+| 2 | AGENTS 配置 | `tui/mcp_agents.go` | ✅ | [tab-MCP-AGENTS配置.md](docs/tab-MCP-AGENTS配置.md) |
 
 ## SETTINGS 模块
 
@@ -94,7 +100,7 @@ sk-switch/
 - `count` 是上次扫描的快照，每次启动 / 切 tab / 增删 / 手动刷新都会重新扫描并写回
 - `visible` 是预留字段，目前数据源全部参与扫描
 
-### `agents.json` — agent
+### `agents.json` — SKILLS 的 agent 列表
 ```json
 [
   {"name":"claude-code","path":"~/.claude/skills","visible":true},
@@ -102,6 +108,39 @@ sk-switch/
 ]
 ```
 - `visible: true` 才会出现在「技能列表」分配弹窗里
+- 注意 `path` 是**目录**（skill 软链接落在这里）
+
+### `mcp-data.json` — MCP 总账（**真源**）
+```json
+[
+  {
+    "name": "Framelink MCP for Figma",
+    "github": "https://github.com/...",
+    "config": {"command": "bunx", "args": ["-y", "..."]},
+    "assignments": ["claude-code"]
+  }
+]
+```
+- `assignments` 字段直接记录该 MCP 已分配到哪些 agent
+- 「已分配判定」全部以这里为准，不扫具体 agent 文件
+- 删除/编辑/分配/取消分配都先改这里再 best-effort 同步到 agent 文件
+- 默认不存在；用户首次 `a` 添加 MCP 时才创建
+
+### `mcp-agents.json` — MCP 的 agent 列表（**与 SKILLS 完全独立**）
+```json
+[
+  {
+    "name": "claude-code",
+    "type": "claude-json",
+    "path": "~/.claude/.claude.json",
+    "visible": true
+  }
+]
+```
+- `type` 决定写入器格式；目前只支持 `claude-json`（操作 `mcpServers`）
+- `path` 是**单个 JSON 文件**（不是目录！与 SKILLS agent 语义不同）
+- `visible: true` 才会作为 MCP 列表的一列展示
+- 默认不存在；用户首次 `a` 添加 MCP agent 时才创建
 
 ### `runtime-config.yaml` — 运行时常量
 ```yaml

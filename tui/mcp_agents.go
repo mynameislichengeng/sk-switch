@@ -1,17 +1,70 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mynameislichengeng/sk-switch/config"
 )
 
-// MCPAgentsModel is the MCP module's AGENTS configuration tab. Commit 1 lands
-// a placeholder; the real list + per-agent assign popup arrives in commit 4.
+// mcpAgentsPopup is the active overlay on top of the AGENTS list.
+type mcpAgentsPopup int
+
+const (
+	mcpAgentsNoPopup mcpAgentsPopup = iota
+	mcpAgentsAdd
+	mcpAgentsEdit
+	mcpAgentsDelete
+	mcpAgentsAssign
+)
+
+// MCPAgentsModel is the AGENTS configuration tab inside the MCP module.
+//
+// It deliberately does NOT reuse ConfigListModel because MCP agents have one
+// extra field (Type, selected from the writer registry) and one extra
+// interaction (Space → assignment popup) that don't apply to SKILLS agents.
+// Keeping it separate avoids piling conditionals onto ConfigListModel.
 type MCPAgentsModel struct {
-	store  *config.Store
-	width  int
-	height int
+	store *config.Store
+
+	items         []config.MCPAgent
+	mcps          []config.MCP // for assign popup
+	cursor        int
+	width, height int
+
+	popup mcpAgentsPopup
+
+	// form (add + edit) state — the four input fields.
+	formIdx     int    // edit only
+	formName    string // single-line
+	formNameCur int
+	formType    string // cycles through MCPAgentTypes()
+	formPath    string // single-line
+	formPathCur int
+	formVisible bool
+	formField   int // 0=name 1=type 2=path 3=visible
+	formErr     string
+
+	// delete-confirm state
+	deleteIdx int
+
+	// assign popup state
+	assign mcpAgentAssignState
+
+	err string
 }
+
+const (
+	mcpAgentFieldName = iota
+	mcpAgentFieldType
+	mcpAgentFieldPath
+	mcpAgentFieldVisible
+	mcpAgentFieldCount
+)
 
 func NewMCPAgentsModel(store *config.Store) MCPAgentsModel {
 	return MCPAgentsModel{store: store}
@@ -19,14 +72,593 @@ func NewMCPAgentsModel(store *config.Store) MCPAgentsModel {
 
 func (m *MCPAgentsModel) SetSize(w, h int) { m.width = w; m.height = h }
 
-func (m MCPAgentsModel) inSpecialState() bool { return false }
+func (m MCPAgentsModel) inSpecialState() bool { return m.popup != mcpAgentsNoPopup }
 
 func (m MCPAgentsModel) Init() tea.Cmd { return nil }
 
 func (m MCPAgentsModel) Update(msg tea.Msg) (MCPAgentsModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case storeRefreshedMsg:
+		m.refreshFromStore()
+		return m, nil
+	case errMsg:
+		m.err = msg.err
+		return m, nil
+	case tea.KeyMsg:
+		switch m.popup {
+		case mcpAgentsAdd, mcpAgentsEdit:
+			return m.handleForm(msg)
+		case mcpAgentsDelete:
+			return m.handleDelete(msg)
+		case mcpAgentsAssign:
+			return m.handleAssign(msg)
+		}
+		return m.handleList(msg)
+	}
 	return m, nil
 }
 
+func (m *MCPAgentsModel) refreshFromStore() {
+	if m.store == nil {
+		return
+	}
+	m.items = m.store.MCPAgents()
+	m.mcps = m.store.MCPs()
+	if m.cursor >= len(m.items) {
+		m.cursor = max(0, len(m.items)-1)
+	}
+}
+
+// ───── List handlers ─────
+
+func (m MCPAgentsModel) handleList(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
+	switch {
+	case keyPress(km, "up", "k"):
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case keyPress(km, "down", "j"):
+		if m.cursor < len(m.items)-1 {
+			m.cursor++
+		}
+	case keyPress(km, "a"):
+		m.openAddForm()
+	case keyPress(km, "e"):
+		if m.cursor < len(m.items) {
+			m.openEditForm(m.cursor)
+		}
+	case keyPress(km, "d"):
+		if m.cursor < len(m.items) {
+			m.deleteIdx = m.cursor
+			m.popup = mcpAgentsDelete
+			m.err = ""
+		}
+	case keyPress(km, " "):
+		if m.cursor < len(m.items) {
+			m.openAssignPopup(m.cursor)
+		}
+	}
+	return m, nil
+}
+
+func (m *MCPAgentsModel) openAddForm() {
+	types := config.MCPAgentTypes()
+	defaultType := ""
+	if len(types) > 0 {
+		// Pick a stable default — sort and take the first so the choice is
+		// deterministic across runs.
+		sorted := append([]string(nil), types...)
+		sort.Strings(sorted)
+		defaultType = sorted[0]
+	}
+	m.popup = mcpAgentsAdd
+	m.formIdx = -1
+	m.formName = ""
+	m.formNameCur = 0
+	m.formType = defaultType
+	m.formPath = ""
+	m.formPathCur = 0
+	m.formVisible = true
+	m.formField = mcpAgentFieldName
+	m.formErr = ""
+}
+
+func (m *MCPAgentsModel) openEditForm(idx int) {
+	ag := m.items[idx]
+	m.popup = mcpAgentsEdit
+	m.formIdx = idx
+	m.formName = ag.Name
+	m.formNameCur = runeCount(m.formName)
+	m.formType = ag.Type
+	m.formPath = ag.Path
+	m.formPathCur = runeCount(m.formPath)
+	m.formVisible = ag.Visible
+	m.formField = mcpAgentFieldName
+	m.formErr = ""
+}
+
+func (m *MCPAgentsModel) openAssignPopup(idx int) {
+	m.popup = mcpAgentsAssign
+	m.assign = mcpAgentAssignState{
+		agent: m.items[idx],
+		mcps:  cloneMCPSlice(m.mcps),
+	}
+}
+
+// cloneMCPSlice keeps the assign popup's view stable even as background
+// refreshes mutate m.mcps. The assignments map is recomputed each render
+// from the popup's local snapshot.
+func cloneMCPSlice(in []config.MCP) []config.MCP {
+	out := make([]config.MCP, len(in))
+	copy(out, in)
+	return out
+}
+
+// ───── Form handler ─────
+
+func (m MCPAgentsModel) handleForm(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
+	switch {
+	case keyPress(km, "esc"):
+		m.popup = mcpAgentsNoPopup
+		return m, nil
+	case keyPress(km, "ctrl+s"):
+		return m.commitForm()
+	case keyPress(km, "tab", "down"):
+		m.formField = (m.formField + 1) % mcpAgentFieldCount
+		return m, nil
+	case keyPress(km, "shift+tab", "up"):
+		m.formField = (m.formField - 1 + mcpAgentFieldCount) % mcpAgentFieldCount
+		return m, nil
+	}
+	switch m.formField {
+	case mcpAgentFieldName:
+		m.formName, m.formNameCur = editLine(km, m.formName, m.formNameCur)
+	case mcpAgentFieldType:
+		m.formType = cycleType(km, m.formType)
+	case mcpAgentFieldPath:
+		m.formPath, m.formPathCur = editLine(km, m.formPath, m.formPathCur)
+	case mcpAgentFieldVisible:
+		// Any printable / space toggles
+		if keyPress(km, " ", "enter") || (len(km.String()) == 1) {
+			m.formVisible = !m.formVisible
+		}
+	}
+	return m, nil
+}
+
+// editLine routes a single keypress to a single-line field's rune buffer.
+func editLine(km tea.KeyMsg, value string, cursor int) (string, int) {
+	switch {
+	case keyPress(km, "left"):
+		if cursor > 0 {
+			cursor--
+		}
+	case keyPress(km, "right"):
+		if cursor < runeCount(value) {
+			cursor++
+		}
+	case keyPress(km, "home", "ctrl+a"):
+		cursor = 0
+	case keyPress(km, "end", "ctrl+e"):
+		cursor = runeCount(value)
+	case keyPress(km, "backspace"):
+		value, cursor = deleteBefore(value, cursor)
+	case keyPress(km, "delete"):
+		value, cursor = deleteAfter(value, cursor)
+	default:
+		ch := km.String()
+		if len(ch) == 1 {
+			value, cursor = insertAt(value, cursor, ch)
+		}
+	}
+	return value, cursor
+}
+
+// cycleType advances through the registered writer types on any keypress
+// other than navigation. We sort to keep the order stable.
+func cycleType(km tea.KeyMsg, current string) string {
+	types := append([]string(nil), config.MCPAgentTypes()...)
+	if len(types) == 0 {
+		return current
+	}
+	sort.Strings(types)
+	if !keyPress(km, " ", "enter", "right", "left") {
+		return current
+	}
+	for i, t := range types {
+		if t == current {
+			next := i + 1
+			if keyPress(km, "left") {
+				next = i - 1
+			}
+			if next < 0 {
+				next = len(types) - 1
+			}
+			return types[next%len(types)]
+		}
+	}
+	return types[0]
+}
+
+func (m MCPAgentsModel) commitForm() (MCPAgentsModel, tea.Cmd) {
+	ag := config.MCPAgent{
+		Name:    strings.TrimSpace(m.formName),
+		Type:    strings.TrimSpace(m.formType),
+		Path:    config.NormalizePath(m.formPath),
+		Visible: m.formVisible,
+	}
+	if ag.Name == "" {
+		m.formErr = "名称不能为空"
+		return m, nil
+	}
+	if ag.Path == "" {
+		m.formErr = "路径不能为空"
+		return m, nil
+	}
+
+	var err error
+	if m.popup == mcpAgentsAdd {
+		err = m.store.AddMCPAgent(ag)
+	} else {
+		err = m.store.UpdateMCPAgent(m.formIdx, ag)
+	}
+	if err != nil {
+		m.formErr = err.Error()
+		return m, nil
+	}
+	m.popup = mcpAgentsNoPopup
+	return m, refreshCmd(m.store)
+}
+
+// ───── Delete handler ─────
+
+func (m MCPAgentsModel) handleDelete(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
+	switch {
+	case keyPress(km, "esc"):
+		m.popup = mcpAgentsNoPopup
+		m.err = ""
+		return m, nil
+	case keyPress(km, "enter"):
+		err := m.store.RemoveMCPAgent(m.deleteIdx)
+		if errors.Is(err, config.ErrMCPAgentInUse) {
+			m.err = "agent 上仍有 MCP 分配，请先在 MCP 列表中取消分配再删除"
+			m.popup = mcpAgentsNoPopup
+			return m, nil
+		}
+		if err != nil {
+			m.err = err.Error()
+			m.popup = mcpAgentsNoPopup
+			return m, nil
+		}
+		m.popup = mcpAgentsNoPopup
+		return m, refreshCmd(m.store)
+	}
+	return m, nil
+}
+
+// ───── Assign handler ─────
+
+func (m MCPAgentsModel) handleAssign(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
+	// Conflict sub-popup owns Enter (overwrite) and Esc (cancel).
+	if m.assign.conflict != nil {
+		switch {
+		case keyPress(km, "enter"):
+			c := m.assign.conflict
+			m.assign.conflict = nil
+			err := m.store.AssignMCP(c.MCPName, c.AgentName, true)
+			if err != nil {
+				m.assign.err = "覆盖失败: " + err.Error()
+				return m, nil
+			}
+			m.assign.err = ""
+			m.assign.mcps = m.store.MCPs() // refresh in-popup state
+			return m, refreshCmd(m.store)
+		case keyPress(km, "esc"):
+			m.assign.conflict = nil
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch {
+	case keyPress(km, "esc"):
+		m.popup = mcpAgentsNoPopup
+		return m, nil
+	case keyPress(km, "up", "k"):
+		if m.assign.cursor > 0 {
+			m.assign.cursor--
+		}
+	case keyPress(km, "down", "j"):
+		if m.assign.cursor < len(m.assign.mcps)-1 {
+			m.assign.cursor++
+		}
+	case keyPress(km, " "):
+		return m.toggleAssignment()
+	}
+	return m, nil
+}
+
+func (m MCPAgentsModel) toggleAssignment() (MCPAgentsModel, tea.Cmd) {
+	if len(m.assign.mcps) == 0 || m.assign.cursor >= len(m.assign.mcps) {
+		return m, nil
+	}
+	mcp := m.assign.mcps[m.assign.cursor]
+	agentName := m.assign.agent.Name
+	currently := m.store.IsMCPAssigned(mcp.Name, agentName)
+
+	if currently {
+		if err := m.store.UnassignMCP(mcp.Name, agentName); err != nil {
+			m.assign.err = "取消分配失败: " + err.Error()
+			return m, nil
+		}
+	} else {
+		err := m.store.AssignMCP(mcp.Name, agentName, false)
+		if err != nil {
+			if conflict, ok := err.(*config.MCPConflict); ok {
+				m.assign.conflict = conflict
+				m.assign.err = ""
+				return m, nil
+			}
+			m.assign.err = "分配失败: " + err.Error()
+			return m, nil
+		}
+	}
+	m.assign.err = ""
+	m.assign.mcps = m.store.MCPs() // pull updated assignments
+	return m, refreshCmd(m.store)
+}
+
+// ───── View ─────
+
 func (m MCPAgentsModel) View() string {
-	return "\n  🚧 MCP · AGENTS 配置 — 即将到来\n\n  将与 SKILLS 下的 AGENTS 配置完全独立。"
+	switch m.popup {
+	case mcpAgentsAdd, mcpAgentsEdit:
+		return m.renderForm()
+	case mcpAgentsDelete:
+		return m.renderDeleteConfirm()
+	case mcpAgentsAssign:
+		return renderAgentAssignPopup(m.assign, m.width, m.height)
+	}
+	return m.renderList()
+}
+
+func (m MCPAgentsModel) renderList() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	if m.err != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(theme.ModifiedFg).Render("❌ " + m.err))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(fmt.Sprintf("总数：%d   ", len(m.items)))
+	b.WriteString(lipgloss.NewStyle().Faint(true).Render("（与 SKILLS 的 AGENTS 配置完全独立）"))
+	b.WriteString("\n\n")
+
+	if len(m.items) == 0 {
+		b.WriteString("  (还没有 MCP agent — 按 a 添加)\n\n")
+		b.WriteString(m.renderHelpLine())
+		return b.String()
+	}
+
+	type col struct {
+		name string
+		minW int
+	}
+	cols := []col{
+		{"#", 4},
+		{"名称", 16},
+		{"类型", 14},
+		{"配置文件路径", 32},
+		{"已分配", 8},
+		{"是否开启", 8},
+	}
+	sepW := 3
+	totalMin := len(cols) * sepW
+	for _, c := range cols {
+		totalMin += c.minW
+	}
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		widths[i] = c.minW
+	}
+	if m.width > totalMin {
+		extra := m.width - totalMin - 4
+		if extra > 0 {
+			weights := []int{0, 1, 0, 4, 0, 0}
+			totalW := 0
+			for _, w := range weights {
+				totalW += w
+			}
+			if totalW > 0 {
+				for i, w := range weights {
+					widths[i] += extra * w / totalW
+				}
+			}
+		}
+	}
+
+	build := func(vals []string) string {
+		var sb strings.Builder
+		for i, v := range vals {
+			if i > 0 {
+				sb.WriteString(" │ ")
+			}
+			sb.WriteString(padCenter(truncate(v, widths[i]), widths[i]))
+		}
+		return sb.String()
+	}
+	sep := func() string {
+		var sb strings.Builder
+		for i := range widths {
+			if i > 0 {
+				sb.WriteString("─┼─")
+			}
+			sb.WriteString(strings.Repeat("─", widths[i]))
+		}
+		return sb.String()
+	}
+
+	// Compute per-agent assignment counts for the "已分配" column.
+	counts := map[string]int{}
+	for _, mcp := range m.mcps {
+		for _, an := range mcp.Assignments {
+			counts[an]++
+		}
+	}
+
+	header := []string{"#", "名称", "类型", "配置文件路径", "已分配", "是否开启"}
+	headerStyle := lipgloss.NewStyle().Bold(true)
+	b.WriteString("  " + headerStyle.Render(build(header)) + "\n")
+	b.WriteString("  " + sep() + "\n")
+
+	for i, ag := range m.items {
+		on := "关闭"
+		if ag.Visible {
+			on = "开启"
+		}
+		row := build([]string{
+			fmt.Sprintf("%d", i+1),
+			ag.Name,
+			ag.Type,
+			ag.Path,
+			fmt.Sprintf("%d", counts[ag.Name]),
+			on,
+		})
+		if i == m.cursor {
+			row = rowHighlightStyle.Render(row)
+		}
+		b.WriteString("  " + row + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.renderHelpLine())
+	return b.String()
+}
+
+func (m MCPAgentsModel) renderHelpLine() string {
+	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | 空格 分配 MCP | r 刷新 | Tab 切换 | q 退出")
+	if m.width > 2 {
+		return lipgloss.PlaceHorizontal(m.width-2, lipgloss.Right, txt)
+	}
+	return txt
+}
+
+func (m MCPAgentsModel) renderForm() string {
+	titleStyle := popupTitleStyle
+	keyStyle := lipgloss.NewStyle().Faint(true)
+	activeStyle := popupActiveStyle
+	dim := lipgloss.NewStyle().Faint(true)
+	errStyle := lipgloss.NewStyle().Foreground(theme.ModifiedFg)
+
+	title := "新增 MCP agent"
+	if m.popup == mcpAgentsEdit {
+		title = "编辑 MCP agent"
+	}
+
+	visLabel := "关闭"
+	if m.formVisible {
+		visLabel = "开启"
+	}
+
+	type field struct {
+		label string
+		body  string
+		idx   int
+	}
+	nameBody := m.formName
+	if m.formField == mcpAgentFieldName {
+		nameBody = renderWithCursor(m.formName, m.formNameCur)
+	}
+	pathBody := m.formPath
+	if m.formField == mcpAgentFieldPath {
+		pathBody = renderWithCursor(m.formPath, m.formPathCur)
+	}
+	fields := []field{
+		{"名称: ", nameBody, mcpAgentFieldName},
+		{"类型: ", m.formType + dim.Render("    (空格切换)"), mcpAgentFieldType},
+		{"路径: ", pathBody, mcpAgentFieldPath},
+		{"开启: ", visLabel + dim.Render("    (空格切换)"), mcpAgentFieldVisible},
+	}
+
+	var lines []string
+	lines = append(lines, titleStyle.Render(title), "")
+	for _, f := range fields {
+		line := f.label + f.body
+		if f.idx == m.formField {
+			line = activeStyle.Render(f.label) + f.body
+		} else {
+			line = keyStyle.Render(f.label) + dim.Render(f.body)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", dim.Render("路径指向该 agent 的 MCP 配置文件，分配 MCP 时会写入此文件。"))
+
+	if m.formErr != "" {
+		lines = append(lines, "", errStyle.Render("❌ "+m.formErr))
+	}
+	hint := popupHintLine(lines, "Tab 切字段 | Ctrl+S 保存 | Esc 取消")
+	lines = append(lines, "", hint)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(popupBorderColor).
+		Padding(1, 3).
+		Render(strings.Join(lines, "\n"))
+
+	if m.width > 0 && m.height > 0 {
+		boxLines := strings.Count(box, "\n") + 1
+		topPad := (m.height - boxLines) / 4
+		if topPad < 0 {
+			topPad = 0
+		}
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+			strings.Repeat("\n", topPad)+box)
+	}
+	return box
+}
+
+func (m MCPAgentsModel) renderDeleteConfirm() string {
+	if m.deleteIdx < 0 || m.deleteIdx >= len(m.items) {
+		return ""
+	}
+	ag := m.items[m.deleteIdx]
+	titleStyle := popupTitleStyle
+	keyStyle := lipgloss.NewStyle().Faint(true)
+	dim := lipgloss.NewStyle().Faint(true)
+
+	// Pre-flight: check for in-use to warn the user before they confirm.
+	hasInUse := m.store.MCPAgentInUse(ag.Name)
+
+	var lines []string
+	lines = append(lines, titleStyle.Render("删除 MCP agent？"), "")
+	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("名称:"), ag.Name))
+	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("类型:"), ag.Type))
+	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("路径:"), ag.Path))
+	if hasInUse {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.ModifiedFg).Bold(true).
+			Render("⚠ 该 agent 上仍有 MCP 分配，请先取消分配后再删除。"))
+	} else {
+		lines = append(lines, "")
+		lines = append(lines, dim.Render("该 agent 当前没有 MCP 分配，可安全删除（不会改动配置文件）。"))
+	}
+
+	hint := popupHintLine(lines, "Enter 确认删除 | Esc 取消")
+	lines = append(lines, "", hint)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(popupBorderColor).
+		Padding(1, 3).
+		Render(strings.Join(lines, "\n"))
+
+	if m.width > 0 && m.height > 0 {
+		boxLines := strings.Count(box, "\n") + 1
+		topPad := (m.height - boxLines) / 4
+		if topPad < 0 {
+			topPad = 0
+		}
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+			strings.Repeat("\n", topPad)+box)
+	}
+	return box
 }
