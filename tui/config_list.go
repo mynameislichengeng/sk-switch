@@ -17,27 +17,27 @@ const (
 )
 
 type ConfigListModel struct {
-	store    *config.Store
-	ct       configType
-	cursor   int
-	items    []configItem
-	adding    bool
-	addName   string
-	addPath   string
-	addShow   bool
-	addField  int // 0=name, 1=path, 2=visible
-	addCursor int // rune-cursor in the active text field
-	editing   bool
-	editIdx   int
-	editName  string
-	editPath  string
-	editShow  bool
+	store      *config.Store
+	ct         configType
+	cursor     int
+	items      []configItem
+	adding     bool
+	addName    string
+	addPath    string
+	addShow    bool
+	addField   int // 0=name, 1=path, 2=visible
+	addCursor  int // rune-cursor in the active text field
+	editing    bool
+	editIdx    int
+	editName   string
+	editPath   string
+	editShow   bool
 	editField  int
 	editCursor int
-	deleting bool
-	err      string
-	width    int
-	height   int
+	deleting   bool
+	err        string
+	width      int
+	height     int
 }
 
 func (m *ConfigListModel) SetSize(w, h int) {
@@ -46,10 +46,10 @@ func (m *ConfigListModel) SetSize(w, h int) {
 }
 
 type configItem struct {
-	Name    string
-	Path    string
-	Count   int
-	Visible bool
+	Name     string
+	Path     string
+	Count    int
+	Visible  bool
 	HasCount bool
 }
 

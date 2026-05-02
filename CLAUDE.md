@@ -1,6 +1,22 @@
 # sk-switch
 
-基于 Go + BubbleTea 的 TUI 工具，用于把数据源中的 skill 通过相对路径软链接分配/取消分配给不同的 AI agent（Claude Code、OpenCode 等），实现多 agent 共享同一份 skill 源。
+基于 Go + BubbleTea 的 TUI 工具，统一管理多 AI agent（Claude Code、OpenCode、Codex 等）的：
+- **SKILLS**：把数据源中的 skill 通过相对路径软链接分配/取消分配给各 agent
+- **MCP**：把 MCP server 配置写入各 agent 的 mcp 配置文件（如 `~/.claude/.claude.json` 的 `mcpServers`）
+
+## 顶层导航：3 个模块 + 入口弹窗
+
+启动时弹出"选择模块"全屏弹窗（首次启动），之后会记住上次进入的模块（`runtime-config.yaml` 的 `last_module`），直接进入。任何模块内按 `Ctrl+P` 可随时切回入口。
+
+| 模块 | Tab 列表 |
+|------|---------|
+| **SKILLS** | 技能列表 · 技能安装 · 数据源配置 · agent 配置 |
+| **MCP** | MCP 列表 · AGENTS 配置 |
+| **SETTINGS** | 主题配置 |
+
+> ⚠ MCP 与 SKILLS 的"AGENTS 配置"是**完全独立的两份配置**（`agents.json` vs `mcp-agents.json`），互不影响。
+
+详见 [docs/入口.md](docs/入口.md)。
 
 ## 目录结构
 
@@ -8,24 +24,34 @@
 sk-switch/
 ├── main.go                 # 入口：初始化 Store → 启动 TUI
 ├── go.mod / go.sum
-├── agent/agent.go          # Link / Unlink / CanLink — 软链接操作
-├── config/                 # 内存 Store + 四份磁盘配置
+├── agent/agent.go          # SKILLS: Link / Unlink / CanLink — 软链接操作
+├── config/                 # 内存 Store + 磁盘配置
 │   ├── paths.go            # ConfigDir / ExpandPath / NormalizePath / IsDirPath
-│   ├── source.go           # source.json
-│   ├── agents.go           # agents.json
-│   ├── runtime.go          # runtime-config.yaml
-│   ├── theme.go            # theme.yaml（色板，独立模块）
+│   ├── source.go           # source.json (SKILLS 数据源)
+│   ├── agents.go           # agents.json (SKILLS 的 agent 列表)
+│   ├── runtime.go          # runtime-config.yaml (含 last_module)
+│   ├── theme.go            # theme.yaml (全局色板)
 │   ├── scan.go             # Skill 结构 + scanOneSource + isAssigned
-│   └── store.go            # Store —— 运行时唯一查询源
+│   ├── mcp.go              # 🚧 MCP 结构 + mcp-data.json (commit 2)
+│   ├── mcp_agent.go        # 🚧 MCPAgent 结构 + mcp-agents.json (commit 2)
+│   ├── mcp_writer.go       # 🚧 MCPWriter 接口 + 注册表 (commit 2)
+│   ├── mcp_writer_claude.go # 🚧 claude-json writer (commit 2)
+│   └── store.go            # Store —— 运行时唯一查询源（含 SKILLS + MCP + Runtime）
 ├── tui/
-│   ├── tui.go              # 主模型 / Tab 路由 / refreshCmd
+│   ├── tui.go              # 主模型 / 模块+Tab 双层路由 / 入口弹窗调度
+│   ├── module.go           # module 枚举 + 每模块 tab 列表
+│   ├── entry.go            # 入口"选择模块"全屏弹窗
 │   ├── styles.go           # Theme 结构 + 派生 lipgloss.Style + ApplyTheme 热更新
-│   ├── list.go             # Tab 1 技能列表 + 分配/筛选/二次确认弹窗
-│   ├── install.go          # Tab 2 技能安装（占位）
-│   ├── config_list.go      # Tab 3/4 数据源/agent 配置（共用）
-│   └── theme_config.go     # Tab 5 主题配置 + 编辑弹窗
+│   ├── list.go             # SKILLS · 技能列表
+│   ├── skill_view.go       # SKILLS · 技能详情（glamour 渲染 SKILL.md）
+│   ├── install.go          # SKILLS · 技能安装（占位）
+│   ├── config_list.go      # SKILLS · 数据源 / agent 配置（共用 ConfigListModel）
+│   ├── mcp_list.go         # MCP · 列表（commit 1 占位 → commit 3 实现）
+│   ├── mcp_agents.go       # MCP · AGENTS 配置（commit 1 占位 → commit 4 实现）
+│   └── theme_config.go     # SETTINGS · 主题配置
 └── docs/
     ├── ui设计原则.md
+    ├── 入口.md             # 入口弹窗 + 模块切换说明
     ├── tab-技能列表.md
     ├── tab-技能安装.md
     ├── tab-数据源配置.md
@@ -33,7 +59,7 @@ sk-switch/
     └── tab-主题配置.md
 ```
 
-## 5 个 Tab
+## SKILLS 模块（4 个 Tab）
 
 | Tab | 名称 | 文件 | 状态 | 详细文档 |
 |-----|------|------|------|---------|
@@ -41,7 +67,19 @@ sk-switch/
 | 2 | 技能安装 | `tui/install.go` | 🚧 占位 | [tab-技能安装.md](docs/tab-技能安装.md) |
 | 3 | 数据源配置 | `tui/config_list.go` | ✅ | [tab-数据源配置.md](docs/tab-数据源配置.md) |
 | 4 | agent 配置 | `tui/config_list.go` | ✅ | [tab-agents配置.md](docs/tab-agents配置.md) |
-| 5 | 主题配置 | `tui/theme_config.go` | ✅ | [tab-主题配置.md](docs/tab-主题配置.md) |
+
+## MCP 模块（2 个 Tab）
+
+| Tab | 名称 | 文件 | 状态 |
+|-----|------|------|------|
+| 1 | MCP 列表 | `tui/mcp_list.go` | 🚧 commit 3 |
+| 2 | AGENTS 配置 | `tui/mcp_agents.go` | 🚧 commit 4 |
+
+## SETTINGS 模块
+
+| Tab | 名称 | 文件 | 状态 | 详细文档 |
+|-----|------|------|------|---------|
+| 1 | 主题配置 | `tui/theme_config.go` | ✅ | [tab-主题配置.md](docs/tab-主题配置.md) |
 
 ## 配置文件（`~/.config/sk-switch/`）
 
@@ -68,8 +106,10 @@ sk-switch/
 ### `runtime-config.yaml` — 运行时常量
 ```yaml
 first_run: false
+last_module: skills   # skills | mcp | settings
 ```
 - 第一次启动时不存在 → 默认 `first_run: true`，写入默认 source/agents 后翻为 `false`
+- `last_module` 记录上次进入的模块；启动时直接进；为空（首次）则弹"选择模块"窗
 
 ### `theme.yaml` — 全局色板
 ```yaml
@@ -137,12 +177,13 @@ UI 永远从 `Store` 读，从不直接读盘。
 
 | 按键 | 功能 |
 |------|------|
-| `Tab` / `Shift+Tab` | 切 tab |
+| `Tab` / `Shift+Tab` | 在**当前模块**内切 tab |
+| `Ctrl+P` | 打开"选择模块"入口弹窗（切到其他模块） |
 | `r` | 手动刷新 Store |
-| `q` | 退出 |
+| `q` | 退出（带二次确认） |
 | `Ctrl+C` | 强制退出（任何状态下） |
 
-`Tab` / `r` / `q` 在任何 tab 的**弹窗状态**（`inSpecialState`）下都被屏蔽，避免误触。`Ctrl+C` 永远生效。
+`Tab` / `Ctrl+P` / `r` / `q` 在任何 tab 的**弹窗状态**（`inSpecialState`）下都被屏蔽，避免误触。`Ctrl+C` 永远生效。
 
 各 tab 内的具体快捷键见对应 docs。
 

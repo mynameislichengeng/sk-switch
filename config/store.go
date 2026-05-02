@@ -302,6 +302,34 @@ func (s *Store) UpdateAgent(idx int, ag Agent) error {
 	return s.Refresh()
 }
 
+// Runtime returns a snapshot of the runtime state. Callers must not mutate the
+// returned pointer's fields directly; use SetLastModule etc.
+func (s *Store) Runtime() Runtime {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.runtime == nil {
+		return Runtime{}
+	}
+	return *s.runtime
+}
+
+// SetLastModule persists the module the user last entered so the next launch
+// skips the entry modal. Empty string clears it.
+func (s *Store) SetLastModule(name string) error {
+	s.mu.Lock()
+	if s.runtime == nil {
+		s.runtime = &Runtime{}
+	}
+	if s.runtime.LastModule == name {
+		s.mu.Unlock()
+		return nil
+	}
+	s.runtime.LastModule = name
+	snap := *s.runtime
+	s.mu.Unlock()
+	return saveRuntime(&snap)
+}
+
 func (s *Store) RemoveAgent(idx int) error {
 	s.mu.Lock()
 	if idx < 0 || idx >= len(s.agents) {

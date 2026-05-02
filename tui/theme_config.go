@@ -15,19 +15,19 @@ import (
 // every token without persisting until they confirm an edit. Saving writes
 // theme.yaml and live-applies the change to every Style.
 type ThemeConfigModel struct {
-	cfg     config.ThemeConfig
-	cursor  int // 0..len(themeRows)-1
+	cfg        config.ThemeConfig
+	cursor     int // 0..len(themeRows)-1
 	editing    bool
 	editIdx    int
 	editLight  string
 	editDark   string
 	editField  int // 0=light 1=dark
 	editCursor int // rune-cursor in the active text field
-	loadErr   string
-	err       string
-	flash     string
-	width     int
-	height    int
+	loadErr    string
+	err        string
+	flash      string
+	width      int
+	height     int
 }
 
 // themeRow describes one editable row in the theme tab. The accessor pair
@@ -192,7 +192,7 @@ func (m ThemeConfigModel) renderList() string {
 
 	if m.loadErr != "" {
 		b.WriteString(lipgloss.NewStyle().Foreground(theme.ModifiedFg).
-			Render("⚠ "+m.loadErr+"（已使用默认主题）"))
+			Render("⚠ " + m.loadErr + "（已使用默认主题）"))
 		b.WriteString("\n\n")
 	}
 	if m.flash != "" {
