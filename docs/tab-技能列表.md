@@ -9,6 +9,7 @@
 ## 文件
 
 - `tui/list.go` — `ListModel`
+- `tui/skill_view.go` — `skillView`，全屏 SKILL.md 查看器（glamour 渲染 + viewport 滚动）
 
 ## 数据来源
 
@@ -60,11 +61,27 @@ type ListModel struct {
 | `↑` / `k` | 上移一行（自动滚动） | ListModel |
 | `↓` / `j` | 下移一行 | ListModel |
 | `空格` | 打开当前行的「技能详情 / 分配」弹窗 | ListModel |
+| `v` | 全屏查看当前行的 SKILL.md（glamour 渲染） | ListModel |
 | `r` | 刷新 Store | tui.go（全局） |
 | `Tab` / `Shift+Tab` | 切 tab | tui.go（全局） |
 | `q` | 退出 | tui.go（全局） |
 
-底部帮助行只显示全局可用项：`r 刷新 | Tab 切换 | q 退出`。
+底部帮助行：`r 刷新 | s 筛选 | g 分组 | 空格 分配 | v 查看 | Tab 切换 | q 退出`。
+
+### SKILL.md 查看器内（`m.view.active` 时）
+
+| 按键 | 功能 |
+|------|------|
+| `↑/↓` `j/k` | 单行滚动 |
+| `PgUp` / `PgDn` | 翻页 |
+| `g` / `G` | 跳到顶 / 底 |
+| `Esc` / `q` | 关闭查看器，回到列表 |
+
+bubbles/viewport 还顺带绑定了 vim 风的 `f/b/space` 翻页和 `u/d/Ctrl+U/Ctrl+D` 半页，未在帮助行显示但仍可用。
+
+打开是异步的：按 `v` 立刻显示「加载中…」，glamour 渲染完成后通过 `skillRenderedMsg` 回填内容。`main.go` 在启动时 `tui.WarmupGlamour()` 预热 chroma 词法库，避免第一次打开卡顿。
+
+查看器属于 `inSpecialState()`，全局 `Tab` / `r` / `q` 在打开期间被屏蔽（`Ctrl+C` 仍生效）。
 
 ### 分配弹窗内
 

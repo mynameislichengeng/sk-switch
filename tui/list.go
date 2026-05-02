@@ -49,12 +49,13 @@ type ListModel struct {
 	filter           filterState  // applied filter
 	filterDraft      filterState  // editing copy inside filter popup
 	filterPopup      bool
-	filterField      int // 0=Name 1=Source 2=DataSrc 3..=agent[i]
+	filterField      int      // 0=Name 1=Source 2=DataSrc 3..=agent[i]
 	mode             listMode // 分组 / 字母（不持久化，重启回到默认 group）
 	err              string
 	conflict         bool
 	assignPopup      bool
-	assignConfirm    bool // 二次确认弹窗，列出 commit 将执行的变更
+	assignConfirm    bool      // 二次确认弹窗，列出 commit 将执行的变更
+	view             skillView // 全屏 SKILL.md 查看器
 	viewHeight       int
 	viewWidth        int
 	scrollY          int
@@ -67,10 +68,18 @@ func NewListModel(store *config.Store) ListModel {
 func (m *ListModel) SetSize(w, h int) {
 	m.viewWidth = w
 	m.viewHeight = h
+	if m.view.active {
+		// 头/尾各占 1 行（标题 + 提示），中间留给 viewport
+		bodyH := h - 2
+		if bodyH < 1 {
+			bodyH = 1
+		}
+		m.view.Resize(w, bodyH)
+	}
 }
 
 func (m ListModel) inSpecialState() bool {
-	return m.conflict || m.assignPopup || m.filterPopup || m.assignConfirm
+	return m.conflict || m.assignPopup || m.filterPopup || m.assignConfirm || m.view.active
 }
 
 func (m ListModel) Init() tea.Cmd { return nil }
@@ -83,7 +92,13 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		return m, nil
+	case skillRenderedMsg:
+		m.view.ApplyRender(msg)
+		return m, nil
 	case tea.KeyMsg:
+		if m.view.active {
+			return m.handleSkillView(msg)
+		}
 		if m.filterPopup {
 			return m.handleFilterPopup(msg)
 		}
@@ -138,6 +153,15 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 					m.scrollY++
 				}
 			}
+		case keyPress(msg, "v"):
+			if m.cursor < len(m.skills) {
+				bodyH := m.viewHeight - 2
+				if bodyH < 1 {
+					bodyH = 1
+				}
+				return m, m.view.Open(m.skills[m.cursor], m.viewWidth, bodyH)
+			}
+			return m, nil
 		case keyPress(msg, " "):
 			m.assignPopup = true
 			m.popupAgentCursor = 0
@@ -427,6 +451,17 @@ func (m ListModel) handlePopup(msg tea.KeyMsg) (ListModel, tea.Cmd) {
 	return m, nil
 }
 
+// handleSkillView routes keypresses while the SKILL.md viewer is open.
+// Esc/q closes it; everything else feeds the viewport for scrolling.
+func (m ListModel) handleSkillView(msg tea.KeyMsg) (ListModel, tea.Cmd) {
+	if keyPress(msg, "esc") || keyPress(msg, "q") {
+		m.view.Close()
+		return m, nil
+	}
+	cmd := m.view.Update(msg)
+	return m, cmd
+}
+
 func (m ListModel) handleAssignConfirm(msg tea.KeyMsg) (ListModel, tea.Cmd) {
 	switch {
 	case keyPress(msg, "enter"):
@@ -538,6 +573,9 @@ func (m *ListModel) adjustScroll() {
 }
 
 func (m ListModel) View() string {
+	if m.view.active {
+		return m.view.View(m.viewWidth)
+	}
 	topBar := m.renderTopBar()
 	helpLine := m.renderHelpLine()
 	if m.filterPopup {
@@ -892,7 +930,7 @@ func (m ListModel) renderHelpLine() string {
 	if m.conflict {
 		return "⚠ " + m.err + "  o=覆盖 | n=跳过 | Esc=取消"
 	}
-	txt := helpLineStyle.Render("r 刷新 | s 筛选 | g 分组 | 空格 分配 | Tab 切换 | q 退出")
+	txt := helpLineStyle.Render("r 刷新 | s 筛选 | g 分组 | 空格 分配 | v 查看 | Tab 切换 | q 退出")
 	if m.viewWidth > 2 {
 		return lipgloss.PlaceHorizontal(m.viewWidth-2, lipgloss.Right, txt)
 	}
