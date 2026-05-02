@@ -109,14 +109,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.showEntry {
 		if km, ok := msg.(tea.KeyMsg); ok {
 			switch km.String() {
-			case "ctrl+c":
+			case "ctrl+c", "q":
+				// 'q' always exits from the entry modal — there is no
+				// in-progress work behind it that would justify a confirm
+				// dialog, and the modal's hint line advertises 'q 退出'
+				// regardless of whether canClose is true.
 				m.quitting = true
 				return m, tea.Quit
-			case "q":
-				if !m.entry.canClose {
-					m.quitting = true
-					return m, tea.Quit
-				}
 			}
 		}
 		var (
