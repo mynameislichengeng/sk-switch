@@ -10,10 +10,20 @@ import (
 
 // Link creates a relative symlink from the agent's skill dir to the data source's
 // skill dir. The agent dir is created if it doesn't exist.
+//
+// We resolve symlinks on agentPath before computing the relative target —
+// sk.SkillDir was already symlink-resolved during scan (config/scan.go), so
+// without resolving agentPath too the Rel() call could span macOS's /var
+// ↔ /private/var alias and yield an `../`-heavy target that doesn't
+// resolve back. Resolving both consistently produces a short, correct
+// relative path.
 func Link(ag config.Agent, sk config.Skill) error {
 	agentPath := config.ExpandPath(ag.Path)
 	if err := os.MkdirAll(agentPath, 0755); err != nil {
 		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(agentPath); err == nil {
+		agentPath = resolved
 	}
 	target := filepath.Join(agentPath, sk.Name)
 	rel, err := filepath.Rel(agentPath, sk.SkillDir)
