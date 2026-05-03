@@ -19,20 +19,22 @@ const (
 	mcpAgentsAdd
 	mcpAgentsEdit
 	mcpAgentsDelete
-	mcpAgentsAssign
 )
 
 // MCPAgentsModel is the AGENTS configuration tab inside the MCP module.
 //
 // It deliberately does NOT reuse ConfigListModel because MCP agents have one
-// extra field (Type, selected from the writer registry) and one extra
-// interaction (Space → assignment popup) that don't apply to SKILLS agents.
-// Keeping it separate avoids piling conditionals onto ConfigListModel.
+// extra field (Type, selected from the writer registry) that doesn't apply
+// to SKILLS agents — keeping the model separate avoids piling conditionals
+// onto ConfigListModel.
+//
+// Assignment of MCPs to agents is intentionally NOT exposed on this page
+// per user direction; the page is purely for managing the agent list.
 type MCPAgentsModel struct {
 	store *config.Store
 
 	items         []config.MCPAgent
-	mcps          []config.MCP // for assign popup
+	mcps          []config.MCP // used to render the "已分配" count column
 	cursor        int
 	width, height int
 
@@ -51,9 +53,6 @@ type MCPAgentsModel struct {
 
 	// delete-confirm state
 	deleteIdx int
-
-	// assign popup state
-	assign mcpAgentAssignState
 
 	err string
 }
@@ -90,8 +89,6 @@ func (m MCPAgentsModel) Update(msg tea.Msg) (MCPAgentsModel, tea.Cmd) {
 			return m.handleForm(msg)
 		case mcpAgentsDelete:
 			return m.handleDelete(msg)
-		case mcpAgentsAssign:
-			return m.handleAssign(msg)
 		}
 		return m.handleList(msg)
 	}
@@ -133,10 +130,6 @@ func (m MCPAgentsModel) handleList(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 			m.popup = mcpAgentsDelete
 			m.err = ""
 		}
-	case keyPress(km, " "):
-		if m.cursor < len(m.items) {
-			m.openAssignPopup(m.cursor)
-		}
 	}
 	return m, nil
 }
@@ -175,23 +168,6 @@ func (m *MCPAgentsModel) openEditForm(idx int) {
 	m.formVisible = ag.Visible
 	m.formField = mcpAgentFieldName
 	m.formErr = ""
-}
-
-func (m *MCPAgentsModel) openAssignPopup(idx int) {
-	m.popup = mcpAgentsAssign
-	m.assign = mcpAgentAssignState{
-		agent: m.items[idx],
-		mcps:  cloneMCPSlice(m.mcps),
-	}
-}
-
-// cloneMCPSlice keeps the assign popup's view stable even as background
-// refreshes mutate m.mcps. The assignments map is recomputed each render
-// from the popup's local snapshot.
-func cloneMCPSlice(in []config.MCP) []config.MCP {
-	out := make([]config.MCP, len(in))
-	copy(out, in)
-	return out
 }
 
 // ───── Form handler ─────
@@ -337,78 +313,6 @@ func (m MCPAgentsModel) handleDelete(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 	return m, nil
 }
 
-// ───── Assign handler ─────
-
-func (m MCPAgentsModel) handleAssign(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
-	// Conflict sub-popup owns Enter (overwrite) and Esc (cancel).
-	if m.assign.conflict != nil {
-		switch {
-		case keyPress(km, "enter"):
-			c := m.assign.conflict
-			m.assign.conflict = nil
-			err := m.store.AssignMCP(c.MCPName, c.AgentName, true)
-			if err != nil {
-				m.assign.err = "覆盖失败: " + err.Error()
-				return m, nil
-			}
-			m.assign.err = ""
-			m.assign.mcps = m.store.MCPs() // refresh in-popup state
-			return m, refreshCmd(m.store)
-		case keyPress(km, "esc"):
-			m.assign.conflict = nil
-			return m, nil
-		}
-		return m, nil
-	}
-
-	switch {
-	case keyPress(km, "esc"):
-		m.popup = mcpAgentsNoPopup
-		return m, nil
-	case keyPress(km, "up", "k"):
-		if m.assign.cursor > 0 {
-			m.assign.cursor--
-		}
-	case keyPress(km, "down", "j"):
-		if m.assign.cursor < len(m.assign.mcps)-1 {
-			m.assign.cursor++
-		}
-	case keyPress(km, " "):
-		return m.toggleAssignment()
-	}
-	return m, nil
-}
-
-func (m MCPAgentsModel) toggleAssignment() (MCPAgentsModel, tea.Cmd) {
-	if len(m.assign.mcps) == 0 || m.assign.cursor >= len(m.assign.mcps) {
-		return m, nil
-	}
-	mcp := m.assign.mcps[m.assign.cursor]
-	agentName := m.assign.agent.Name
-	currently := m.store.IsMCPAssigned(mcp.Name, agentName)
-
-	if currently {
-		if err := m.store.UnassignMCP(mcp.Name, agentName); err != nil {
-			m.assign.err = "取消分配失败: " + err.Error()
-			return m, nil
-		}
-	} else {
-		err := m.store.AssignMCP(mcp.Name, agentName, false)
-		if err != nil {
-			if conflict, ok := err.(*config.MCPConflict); ok {
-				m.assign.conflict = conflict
-				m.assign.err = ""
-				return m, nil
-			}
-			m.assign.err = "分配失败: " + err.Error()
-			return m, nil
-		}
-	}
-	m.assign.err = ""
-	m.assign.mcps = m.store.MCPs() // pull updated assignments
-	return m, refreshCmd(m.store)
-}
-
 // ───── View ─────
 
 func (m MCPAgentsModel) View() string {
@@ -417,8 +321,6 @@ func (m MCPAgentsModel) View() string {
 		return m.renderForm()
 	case mcpAgentsDelete:
 		return m.renderDeleteConfirm()
-	case mcpAgentsAssign:
-		return renderAgentAssignPopup(m.assign, m.width, m.height)
 	}
 	return m.renderList()
 }
@@ -535,7 +437,7 @@ func (m MCPAgentsModel) renderList() string {
 }
 
 func (m MCPAgentsModel) renderHelpLine() string {
-	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | 空格 分配 MCP | r 刷新 | Tab 切换 | q 退出")
+	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | r 刷新 | Tab 切换 | q 退出")
 	if m.width > 2 {
 		return lipgloss.PlaceHorizontal(m.width-2, lipgloss.Right, txt)
 	}
