@@ -229,9 +229,8 @@ func editLine(km tea.KeyMsg, value string, cursor int) (string, int) {
 	case keyPress(km, "delete"):
 		value, cursor = deleteAfter(value, cursor)
 	default:
-		ch := km.String()
-		if len(ch) == 1 {
-			value, cursor = insertAt(value, cursor, ch)
+		if r := insertableRunes(km); r != nil {
+			value, cursor = insertAt(value, cursor, string(r))
 		}
 	}
 	return value, cursor

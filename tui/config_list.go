@@ -214,15 +214,20 @@ func (m ConfigListModel) handleAdding(msg tea.KeyMsg) (ConfigListModel, tea.Cmd)
 			m.addPath, m.addCursor = deleteAfter(m.addPath, m.addCursor)
 		}
 	default:
-		ch := msg.String()
-		if len(ch) == 1 {
+		if r := insertableRunes(msg); r != nil {
+			s := string(r)
 			switch m.addField {
 			case 0:
-				m.addName, m.addCursor = insertAt(m.addName, m.addCursor, ch)
+				m.addName, m.addCursor = insertAt(m.addName, m.addCursor, s)
 			case 1:
-				m.addPath, m.addCursor = insertAt(m.addPath, m.addCursor, ch)
+				m.addPath, m.addCursor = insertAt(m.addPath, m.addCursor, s)
 			case 2:
-				m.addShow = !m.addShow
+				// Single-rune toggle on the visible field (matches the
+				// any-key-toggles enum-field convention). Pastes don't
+				// toggle — only direct keystrokes do.
+				if !msg.Paste && len(r) == 1 {
+					m.addShow = !m.addShow
+				}
 			}
 		}
 	}
@@ -287,15 +292,17 @@ func (m ConfigListModel) handleEditing(msg tea.KeyMsg) (ConfigListModel, tea.Cmd
 			m.editPath, m.editCursor = deleteAfter(m.editPath, m.editCursor)
 		}
 	default:
-		ch := msg.String()
-		if len(ch) == 1 {
+		if r := insertableRunes(msg); r != nil {
+			s := string(r)
 			switch m.editField {
 			case 0:
-				m.editName, m.editCursor = insertAt(m.editName, m.editCursor, ch)
+				m.editName, m.editCursor = insertAt(m.editName, m.editCursor, s)
 			case 1:
-				m.editPath, m.editCursor = insertAt(m.editPath, m.editCursor, ch)
+				m.editPath, m.editCursor = insertAt(m.editPath, m.editCursor, s)
 			case 2:
-				m.editShow = !m.editShow
+				if !msg.Paste && len(r) == 1 {
+					m.editShow = !m.editShow
+				}
 			}
 		}
 	}

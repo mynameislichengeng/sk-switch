@@ -400,9 +400,8 @@ func (m ListModel) editFilterText(msg tea.KeyMsg, fieldIdx int) ListModel {
 		}
 		return m
 	}
-	ch := msg.String()
-	if len(ch) == 1 {
-		*target += ch
+	if r := insertableRunes(msg); r != nil {
+		*target += string(r)
 	}
 	return m
 }
@@ -1148,6 +1147,31 @@ func clampCursor(s string, cursor int) int {
 		return n
 	}
 	return cursor
+}
+
+// insertableRunes returns the rune slice to insert for a key event that
+// should add characters to a single-line text field, or nil for events
+// that shouldn't (modifiers like Alt+x, control keys, navigation keys).
+//
+// Crucially this handles bracketed-paste KeyMsgs: bubbletea v1.3.10
+// enables bracketed paste by default and surfaces pastes as
+// KeyMsg{Type: KeyRunes, Paste: true, Runes: <pasted runes>}. The String()
+// of those messages wraps content in '[...]' to defeat shortcut matching,
+// which broke the older `len(km.String())==1` insertion check.
+//
+// Single typed characters (KeyRunes / KeySpace, no Alt) and bracketed
+// pastes both arrive with non-empty Runes — read that field directly.
+func insertableRunes(km tea.KeyMsg) []rune {
+	if km.Alt {
+		return nil
+	}
+	if km.Type != tea.KeyRunes && km.Type != tea.KeySpace {
+		return nil
+	}
+	if len(km.Runes) == 0 {
+		return nil
+	}
+	return km.Runes
 }
 
 // insertAt inserts ch at the rune-cursor position in s and returns the new

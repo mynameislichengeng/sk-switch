@@ -148,12 +148,12 @@ func (m ThemeConfigModel) handleEditing(km tea.KeyMsg) (ThemeConfigModel, tea.Cm
 		}
 		return m, nil
 	}
-	ch := km.String()
-	if len(ch) == 1 {
+	if r := insertableRunes(km); r != nil {
+		s := string(r)
 		if m.editField == 0 {
-			m.editLight, m.editCursor = insertAt(m.editLight, m.editCursor, ch)
+			m.editLight, m.editCursor = insertAt(m.editLight, m.editCursor, s)
 		} else {
-			m.editDark, m.editCursor = insertAt(m.editDark, m.editCursor, ch)
+			m.editDark, m.editCursor = insertAt(m.editDark, m.editCursor, s)
 		}
 	}
 	return m, nil

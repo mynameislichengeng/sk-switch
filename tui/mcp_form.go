@@ -162,9 +162,8 @@ func (f mcpForm) updateField(km tea.KeyMsg) (mcpForm, tea.Cmd) {
 	case keyPress(km, "delete"):
 		*target, *cursor = deleteAfter(*target, *cursor)
 	default:
-		ch := km.String()
-		if len(ch) == 1 {
-			*target, *cursor = insertAt(*target, *cursor, ch)
+		if r := insertableRunes(km); r != nil {
+			*target, *cursor = insertAt(*target, *cursor, string(r))
 		}
 	}
 	return f, nil
