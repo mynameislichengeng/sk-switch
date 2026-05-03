@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -240,6 +241,67 @@ func TestClaudeWriter_RoundtripPreservesNestedFields(t *testing.T) {
 	if !reflect.DeepEqual(args, []any{"-y", "cursor-talk-to-figma-mcp@latest"}) {
 		t.Errorf("TalkToFigma args wrong: %v", args)
 	}
+}
+
+func TestClaudeWriterValidate(t *testing.T) {
+	w := MCPWriterClaudeJSON{}
+	dir := t.TempDir()
+
+	t.Run("nonexistent path", func(t *testing.T) {
+		err := w.Validate(filepath.Join(dir, "nope.json"))
+		if err == nil || !strings.Contains(err.Error(), "不存在") {
+			t.Errorf("expected 不存在 error, got %v", err)
+		}
+	})
+
+	t.Run("empty path", func(t *testing.T) {
+		err := w.Validate("")
+		if err == nil {
+			t.Errorf("expected error for empty path")
+		}
+	})
+
+	t.Run("path is a directory", func(t *testing.T) {
+		err := w.Validate(dir)
+		if err == nil || !strings.Contains(err.Error(), "目录") {
+			t.Errorf("expected 目录 error, got %v", err)
+		}
+	})
+
+	t.Run("empty file accepted", func(t *testing.T) {
+		p := filepath.Join(dir, "empty.json")
+		os.WriteFile(p, nil, 0644)
+		if err := w.Validate(p); err != nil {
+			t.Errorf("empty file should be valid, got %v", err)
+		}
+	})
+
+	t.Run("valid JSON object accepted", func(t *testing.T) {
+		p := filepath.Join(dir, "ok.json")
+		os.WriteFile(p, []byte(`{"mcpServers": {}}`), 0644)
+		if err := w.Validate(p); err != nil {
+			t.Errorf("valid JSON should pass, got %v", err)
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		p := filepath.Join(dir, "bad.json")
+		os.WriteFile(p, []byte(`{"unclosed":`), 0644)
+		err := w.Validate(p)
+		if err == nil || !strings.Contains(err.Error(), "JSON") {
+			t.Errorf("expected JSON parse error, got %v", err)
+		}
+	})
+
+	t.Run("non-object JSON (array) rejected", func(t *testing.T) {
+		// Top level must be an object since mcpServers lives there. An
+		// array-rooted file could never be usable for this writer.
+		p := filepath.Join(dir, "arr.json")
+		os.WriteFile(p, []byte(`[1,2]`), 0644)
+		if err := w.Validate(p); err == nil {
+			t.Errorf("array should be rejected by Validate")
+		}
+	})
 }
 
 func mtime(t *testing.T, path string) int64 {

@@ -36,11 +36,20 @@
 |------|------|------|
 | 名称 | 单行 | 必填、唯一 |
 | 类型 | 在已注册的 writer 类型间循环 | 当前固定 `claude-json` |
-| 路径 | 单行 | 必填；指向**单个 JSON 文件**（不是目录） |
+| 路径 | 单行 | 必填；通过当前 type 对应 writer 的 `Validate()` |
 | 开启 | 布尔 | toggle |
 
-> 路径是否真实存在不在表单层强校验——分配 MCP 时如果文件缺失会报 `ErrMCPFileMissing`，
-> 用户能立即看到错误信息再回来修改。
+### 路径校验（`Validate`）
+
+提交时，Store 会调用所选 type 的 `MCPWriter.Validate(path)`。`claude-json` 的实现要求：
+- 文件存在（不是 `~/.claude/.claud` 这种 typo）
+- 是文件，不是目录
+- 内容是合法 JSON 对象 `{}`（空文件也接受——首次分配 MCP 时会初始化 `mcpServers`）
+
+任意一条不满足 → 弹窗内显示具体错误（`文件不存在` / `路径必须是文件，不是目录` / `文件不是合法的 JSON: ...`），表单不关闭，用户改了再 Enter 重试。
+
+> 新增/编辑 都走同一条 Validate 路径——保证保存后状态总是可用。
+> 后续接入 `codex-toml` 等新 writer 时，各自实现 `Validate` 即可，TUI 和 Store 不动。
 
 ### 表单快捷键
 

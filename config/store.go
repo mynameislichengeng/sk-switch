@@ -564,7 +564,11 @@ func (s *Store) AddMCPAgent(ag MCPAgent) error {
 	if ag.Path == "" {
 		return fmt.Errorf("路径不能为空")
 	}
-	if _, err := MCPWriterFor(ag.Type); err != nil {
+	writer, err := MCPWriterFor(ag.Type)
+	if err != nil {
+		return err
+	}
+	if err := writer.Validate(ag.Path); err != nil {
 		return err
 	}
 
@@ -592,7 +596,11 @@ func (s *Store) UpdateMCPAgent(idx int, ag MCPAgent) error {
 	if ag.Path == "" {
 		return fmt.Errorf("路径不能为空")
 	}
-	if _, err := MCPWriterFor(ag.Type); err != nil {
+	writer, err := MCPWriterFor(ag.Type)
+	if err != nil {
+		return err
+	}
+	if err := writer.Validate(ag.Path); err != nil {
 		return err
 	}
 

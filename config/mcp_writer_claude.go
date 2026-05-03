@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // MCPWriterClaudeJSON handles Claude Code's config file
@@ -98,6 +99,43 @@ func putServers(top map[string]json.RawMessage, servers map[string]json.RawMessa
 		return err
 	}
 	top[claudeServersKey] = raw
+	return nil
+}
+
+// Validate implements MCPWriter.
+//
+// Requirements: path must exist, be a regular file (not a directory), and
+// either be empty (we'll initialize on first write) or parse as a JSON
+// object. The error messages are user-facing — the form pops them up
+// verbatim so they should explain what to fix.
+func (MCPWriterClaudeJSON) Validate(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("路径不能为空")
+	}
+	abs := ExpandPath(path)
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("文件不存在: %s", path)
+		}
+		return fmt.Errorf("无法访问 %s: %v", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("路径必须是文件，不是目录: %s", path)
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return fmt.Errorf("无法读取 %s: %v", path, err)
+	}
+	// Empty file is OK — Write() will initialize a {"mcpServers": {...}}
+	// shell on first assignment.
+	if len(data) == 0 {
+		return nil
+	}
+	var top map[string]any
+	if err := json.Unmarshal(data, &top); err != nil {
+		return fmt.Errorf("文件不是合法的 JSON: %v", err)
+	}
 	return nil
 }
 

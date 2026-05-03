@@ -15,6 +15,11 @@ import (
 // pre-expand it — implementations apply ExpandPath internally so the
 // on-disk MCPAgent.Path string round-trips untouched.
 type MCPWriter interface {
+	// Validate confirms `path` is something this writer can operate on
+	// (file exists, has the right shape, parseable, etc.). Called on
+	// agent add/update so the user catches typos at the form, not when
+	// they later try to assign an MCP. Return nil when the path is OK.
+	Validate(path string) error
 	// Read returns the existing payload registered under `name`, or nil
 	// (with no error) if the file lacks that entry. ErrMCPFileMissing is
 	// returned when the underlying file does not exist on disk.
