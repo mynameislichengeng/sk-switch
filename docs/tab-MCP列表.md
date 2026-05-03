@@ -40,10 +40,11 @@ JSON 字段由 `bubbles/textarea` 实现，**支持终端原生粘贴**（多行
 
 | 按键 | 功能 |
 |------|------|
-| `Tab` / `Shift+Tab` | 切换字段（在 textarea 内也是切字段，**不会输入 Tab 字符**）|
+| `↑` `↓` | 切换字段（textarea 内：仅"首行↑"/"末行↓"溢出切换；其他位置 ↑↓ 是文本光标移动）|
 | `Ctrl+S` | 提交。校验失败 → 弹窗内红字显示，不关窗 |
 | `Esc` | 取消，丢弃未保存改动 |
-| `↑` `↓` `←` `→` `Home` `End` `Backspace` `Delete` | 字段内编辑（textarea 同样支持，含多行光标移动）|
+| `←` `→` `Home` `End` `Backspace` `Delete` | 单行字段内编辑（textarea 同样支持）|
+| `Enter` | 在 textarea 内插入换行（不是提交）|
 
 ### 校验时机
 

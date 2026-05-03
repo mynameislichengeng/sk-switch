@@ -183,10 +183,10 @@ func (m MCPAgentsModel) handleForm(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 		// JSON field is a textarea where Enter inserts a newline; this
 		// agent form has no such field.
 		return m.commitForm()
-	case keyPress(km, "tab", "down"):
+	case keyPress(km, "down"):
 		m.formField = (m.formField + 1) % mcpAgentFieldCount
 		return m, nil
-	case keyPress(km, "shift+tab", "up"):
+	case keyPress(km, "up"):
 		m.formField = (m.formField - 1 + mcpAgentFieldCount) % mcpAgentFieldCount
 		return m, nil
 	}
@@ -497,7 +497,7 @@ func (m MCPAgentsModel) renderForm() string {
 	if m.formErr != "" {
 		lines = append(lines, "", errStyle.Render("❌ "+m.formErr))
 	}
-	hint := popupHintLine(lines, "Tab 切字段 | Enter 保存 | Esc 取消")
+	hint := popupHintLine(lines, "↑↓ 切字段 | Enter 保存 | Esc 取消")
 	lines = append(lines, "", hint)
 
 	box := lipgloss.NewStyle().

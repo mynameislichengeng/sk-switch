@@ -268,7 +268,7 @@ func (f mcpForm) View() string {
 		lines = append(lines, "", errStyle.Render("❌ "+f.err))
 	}
 
-	hint := popupHintLine(lines, "Tab 切字段 | Ctrl+S 保存 | Esc 取消")
+	hint := popupHintLine(lines, "↑↓ 切字段 | Ctrl+S 保存 | Esc 取消")
 	lines = append(lines, "", hint)
 
 	box := lipgloss.NewStyle().

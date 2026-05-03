@@ -55,7 +55,7 @@
 
 | 按键 | 功能 |
 |------|------|
-| `Tab` `Shift+Tab` `↑` `↓` | 切字段 |
+| `↑` `↓` | 切字段 |
 | `Enter` | 提交（与 SKILLS 的 agent 表单一致） |
 | `Esc` | 取消 |
 | `←` `→` `Home` `End` `Backspace` `Delete` | 单行字段内编辑 |

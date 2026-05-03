@@ -168,12 +168,22 @@ func (m MCPListModel) handleForm(km tea.KeyMsg) (MCPListModel, tea.Cmd) {
 		}
 		m.popup = mcpPopupNone
 		return m, refreshCmd(m.store)
-	case keyPress(km, "tab"):
-		m.form.nextField()
-		return m, nil
-	case keyPress(km, "shift+tab"):
-		m.form.prevField()
-		return m, nil
+	case keyPress(km, "up"):
+		// On single-line fields, ↑ always moves to the previous field.
+		// In the JSON textarea, only "↑ at the first line" overflows up
+		// to the previous field; otherwise the textarea handles it for
+		// regular cursor movement.
+		if m.form.field != mcpFormFieldJSON || m.form.jsonArea.Line() == 0 {
+			m.form.prevField()
+			return m, nil
+		}
+	case keyPress(km, "down"):
+		// Mirror of up: textarea bottom-edge overflows to the next field.
+		if m.form.field != mcpFormFieldJSON ||
+			m.form.jsonArea.Line() >= m.form.jsonArea.LineCount()-1 {
+			m.form.nextField()
+			return m, nil
+		}
 	}
 	var cmd tea.Cmd
 	m.form, cmd = m.form.updateField(km)
