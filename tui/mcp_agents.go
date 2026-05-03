@@ -201,7 +201,11 @@ func (m MCPAgentsModel) handleForm(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 	case keyPress(km, "esc"):
 		m.popup = mcpAgentsNoPopup
 		return m, nil
-	case keyPress(km, "ctrl+s"):
+	case keyPress(km, "enter"):
+		// Enter saves — matches the SKILLS agent form pattern
+		// (config_list.go). The MCP-itself form uses Ctrl+S because its
+		// JSON field is a textarea where Enter inserts a newline; this
+		// agent form has no such field.
 		return m.commitForm()
 	case keyPress(km, "tab", "down"):
 		m.formField = (m.formField + 1) % mcpAgentFieldCount
@@ -218,8 +222,11 @@ func (m MCPAgentsModel) handleForm(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 	case mcpAgentFieldPath:
 		m.formPath, m.formPathCur = editLine(km, m.formPath, m.formPathCur)
 	case mcpAgentFieldVisible:
-		// Any printable / space toggles
-		if keyPress(km, " ", "enter") || (len(km.String()) == 1) {
+		// Enum fields toggle on any printable key or backspace (matching
+		// the SKILLS agent form's visible-field behavior). Esc/Enter/Tab
+		// were consumed above; nav keys (left/right/home/end/delete) are
+		// no-ops here.
+		if keyPress(km, "backspace") || len(km.String()) == 1 {
 			m.formVisible = !m.formVisible
 		}
 	}
@@ -254,27 +261,21 @@ func editLine(km tea.KeyMsg, value string, cursor int) (string, int) {
 	return value, cursor
 }
 
-// cycleType advances through the registered writer types on any keypress
-// other than navigation. We sort to keep the order stable.
+// cycleType advances through the registered writer types on any printable
+// key or backspace (mirrors the visible-field toggle pattern). Sorted so
+// the order stays stable across runs.
 func cycleType(km tea.KeyMsg, current string) string {
 	types := append([]string(nil), config.MCPAgentTypes()...)
 	if len(types) == 0 {
 		return current
 	}
 	sort.Strings(types)
-	if !keyPress(km, " ", "enter", "right", "left") {
+	if !(keyPress(km, "backspace") || len(km.String()) == 1) {
 		return current
 	}
 	for i, t := range types {
 		if t == current {
-			next := i + 1
-			if keyPress(km, "left") {
-				next = i - 1
-			}
-			if next < 0 {
-				next = len(types) - 1
-			}
-			return types[next%len(types)]
+			return types[(i+1)%len(types)]
 		}
 	}
 	return types[0]
@@ -429,8 +430,7 @@ func (m MCPAgentsModel) renderList() string {
 		b.WriteString(lipgloss.NewStyle().Foreground(theme.ModifiedFg).Render("❌ " + m.err))
 		b.WriteString("\n\n")
 	}
-	b.WriteString(fmt.Sprintf("总数：%d   ", len(m.items)))
-	b.WriteString(lipgloss.NewStyle().Faint(true).Render("（与 SKILLS 的 AGENTS 配置完全独立）"))
+	b.WriteString(fmt.Sprintf("总数：%d", len(m.items)))
 	b.WriteString("\n\n")
 
 	if len(m.items) == 0 {
@@ -574,9 +574,9 @@ func (m MCPAgentsModel) renderForm() string {
 	}
 	fields := []field{
 		{"名称: ", nameBody, mcpAgentFieldName},
-		{"类型: ", m.formType + dim.Render("    (空格切换)"), mcpAgentFieldType},
+		{"类型: ", m.formType, mcpAgentFieldType},
 		{"路径: ", pathBody, mcpAgentFieldPath},
-		{"开启: ", visLabel + dim.Render("    (空格切换)"), mcpAgentFieldVisible},
+		{"开启: ", visLabel, mcpAgentFieldVisible},
 	}
 
 	var lines []string
@@ -595,7 +595,7 @@ func (m MCPAgentsModel) renderForm() string {
 	if m.formErr != "" {
 		lines = append(lines, "", errStyle.Render("❌ "+m.formErr))
 	}
-	hint := popupHintLine(lines, "Tab 切字段 | Ctrl+S 保存 | Esc 取消")
+	hint := popupHintLine(lines, "Tab 切字段 | Enter 保存 | Esc 取消")
 	lines = append(lines, "", hint)
 
 	box := lipgloss.NewStyle().
