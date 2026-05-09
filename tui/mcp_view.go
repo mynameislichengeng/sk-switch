@@ -40,7 +40,7 @@ func renderMCPViewPopup(mcp config.MCP, agents []config.MCPAgent, w, h int) stri
 
 	lines = append(lines, "", titleStyle.Render("已分配到的 agents"))
 	if len(agents) == 0 {
-		lines = append(lines, dim.Render("  (没有配置 MCP agent — 切到 AGENTS 配置 tab 添加)"))
+		lines = append(lines, popupNoteStyle.Render("  (没有配置 MCP agent — 切到 AGENTS 配置 tab 添加)"))
 	} else {
 		assigned := mcpAssignedSet(mcp)
 		nameW := 0
@@ -60,7 +60,7 @@ func renderMCPViewPopup(mcp config.MCP, agents []config.MCPAgent, w, h int) stri
 		}
 	}
 
-	lines = append(lines, "", dim.Render("此弹窗仅展示分配情况；如需修改请到 AGENTS 配置 tab 操作。"))
+	lines = append(lines, "", popupNoteStyle.Render("此弹窗仅展示分配情况；如需修改请到 AGENTS 配置 tab 操作。"))
 
 	hint := popupHintLine(lines, "Esc 关闭")
 	lines = append(lines, "", hint)

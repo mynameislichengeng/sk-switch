@@ -47,6 +47,7 @@ var (
 	helpLineStyle     lipgloss.Style
 	popupTitleStyle   lipgloss.Style
 	popupActiveStyle  lipgloss.Style
+	popupNoteStyle    lipgloss.Style
 	rowHighlightStyle lipgloss.Style
 	activeTabStyle    lipgloss.Style
 	flashStyle        lipgloss.Style
@@ -60,6 +61,16 @@ func reloadStyles() {
 	helpLineStyle = lipgloss.NewStyle().Foreground(theme.HintFg)
 	popupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(theme.PopupBorder)
 	popupActiveStyle = lipgloss.NewStyle().Foreground(theme.ActiveHighlight).Bold(true)
+	// popupNoteStyle is for explanatory paragraphs inside popups (e.g.
+	// "路径指向该 agent 的 MCP 配置文件…"). Terminals can't change font
+	// size, so we stack three reduction techniques — ANSI dim, hint color,
+	// italic — to make this text visually recede behind field labels and
+	// inactive bodies. Italic may degrade gracefully on terminals that
+	// don't render it; the dim+gray combo still reads as "lighter".
+	popupNoteStyle = lipgloss.NewStyle().
+		Faint(true).
+		Foreground(theme.HintFg).
+		Italic(true)
 	rowHighlightStyle = lipgloss.NewStyle().
 		Background(theme.RowHighlightBg).
 		Foreground(theme.ActiveHighlight).

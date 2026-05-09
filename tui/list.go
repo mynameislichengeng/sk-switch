@@ -788,7 +788,6 @@ func (m ListModel) renderAssignPopup() string {
 
 	titleStyle := popupTitleStyle
 	keyStyle := lipgloss.NewStyle().Faint(true)
-	hintStyle := lipgloss.NewStyle().Faint(true)
 	selStyle := popupActiveStyle
 	modifiedStyle := lipgloss.NewStyle().Foreground(theme.ModifiedFg).Bold(true)
 	errStyle := lipgloss.NewStyle().Foreground(theme.ModifiedFg)
@@ -813,7 +812,7 @@ func (m ListModel) renderAssignPopup() string {
 	}
 
 	if len(m.visible) == 0 {
-		lines = append(lines, "", hintStyle.Render("(还没有可见的 agent，请到 agent 配置 tab 添加)"))
+		lines = append(lines, "", popupNoteStyle.Render("(还没有可见的 agent，请到 agent 配置 tab 添加)"))
 	} else {
 		lines = append(lines, "")
 		lines = append(lines, titleStyle.Render("Agent分配"))
@@ -929,7 +928,7 @@ func (m ListModel) renderHelpLine() string {
 	if m.conflict {
 		return "⚠ " + m.err + "  o=覆盖 | n=跳过 | Esc=取消"
 	}
-	txt := helpLineStyle.Render("r 刷新 | s 筛选 | g 分组 | 空格 分配 | v 查看 | Tab 切换 | q 退出")
+	txt := helpLineStyle.Render("r 刷新 | s 筛选 | g 分组 | 空格 分配 | v 查看 | Tab 切换 | Ctrl+P 切模块 | q 退出")
 	if m.viewWidth > 2 {
 		return lipgloss.PlaceHorizontal(m.viewWidth-2, lipgloss.Right, txt)
 	}

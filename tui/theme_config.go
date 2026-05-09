@@ -231,7 +231,7 @@ func (m ThemeConfigModel) renderList() string {
 		b.WriteString("  " + marker + label + "  " + lightCell + "  " + darkCell + "\n")
 	}
 
-	help := "↑↓ 选择 | e 编辑 | Esc 返回"
+	help := "↑↓ 选择 | e 编辑 | Tab 切换 | Ctrl+P 切模块 | q 退出"
 	b.WriteString("\n")
 	out := helpLineStyle.Render(help)
 	if m.width > 2 {

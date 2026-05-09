@@ -379,7 +379,7 @@ func (m MCPListModel) renderTopBar() string {
 }
 
 func (m MCPListModel) renderHelpLine() string {
-	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | 空格 查看分配 | r 刷新 | Tab 切换 | q 退出")
+	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | 空格 查看分配 | r 刷新 | Tab 切换 | Ctrl+P 切模块 | q 退出")
 	if m.width > 2 {
 		return lipgloss.PlaceHorizontal(m.width-2, lipgloss.Right, txt)
 	}
@@ -404,7 +404,7 @@ func (m MCPListModel) renderDeleteConfirm() string {
 	lines = append(lines, titleStyle.Render("删除 MCP？"), "")
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("名称  :"), mcp.Name))
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("GitHub:"), gh))
-	lines = append(lines, "", dim.Render("该 MCP 当前未被任何 agent 使用，可安全删除。"))
+	lines = append(lines, "", popupNoteStyle.Render("该 MCP 当前未被任何 agent 使用，可安全删除。"))
 	hint := popupHintLine(lines, "Enter 确认删除 | Esc 取消")
 	lines = append(lines, "", hint)
 

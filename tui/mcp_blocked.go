@@ -29,7 +29,7 @@ func renderMCPBlockedPopup(action, mcpName string, assignedAgents []string, w, h
 			lines = append(lines, "  · "+a)
 		}
 	}
-	lines = append(lines, "", dim.Render(fmt.Sprintf("请先在「AGENTS 配置」tab 中取消分配，再回来%s。", action)))
+	lines = append(lines, "", popupNoteStyle.Render(fmt.Sprintf("请先在「AGENTS 配置」tab 中取消分配，再回来%s。", action)))
 
 	hint := popupHintLine(lines, "Esc 关闭")
 	lines = append(lines, "", hint)

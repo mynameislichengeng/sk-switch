@@ -39,6 +39,7 @@ type MCPAgentsModel struct {
 	width, height int
 
 	popup mcpAgentsPopup
+	view  mcpAgentView // 全屏配置文件查看器（Ctrl+M / Enter 打开）
 
 	// form (add + edit) state — the four input fields.
 	formIdx     int    // edit only
@@ -69,9 +70,22 @@ func NewMCPAgentsModel(store *config.Store) MCPAgentsModel {
 	return MCPAgentsModel{store: store}
 }
 
-func (m *MCPAgentsModel) SetSize(w, h int) { m.width = w; m.height = h }
+func (m *MCPAgentsModel) SetSize(w, h int) {
+	m.width = w
+	m.height = h
+	if m.view.active {
+		// 标题 + 提示行各占 1 行，剩余给 viewport — 与 SKILL.md 查看器一致
+		bodyH := h - 2
+		if bodyH < 1 {
+			bodyH = 1
+		}
+		m.view.Resize(w, bodyH)
+	}
+}
 
-func (m MCPAgentsModel) inSpecialState() bool { return m.popup != mcpAgentsNoPopup }
+func (m MCPAgentsModel) inSpecialState() bool {
+	return m.popup != mcpAgentsNoPopup || m.view.active
+}
 
 func (m MCPAgentsModel) Init() tea.Cmd { return nil }
 
@@ -83,7 +97,13 @@ func (m MCPAgentsModel) Update(msg tea.Msg) (MCPAgentsModel, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		return m, nil
+	case mcpAgentRenderedMsg:
+		m.view.ApplyRender(msg)
+		return m, nil
 	case tea.KeyMsg:
+		if m.view.active {
+			return m.handleView(msg)
+		}
 		switch m.popup {
 		case mcpAgentsAdd, mcpAgentsEdit:
 			return m.handleForm(msg)
@@ -130,8 +150,29 @@ func (m MCPAgentsModel) handleList(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 			m.popup = mcpAgentsDelete
 			m.err = ""
 		}
+	case keyPress(km, "enter"):
+		// "enter" 也匹配 Ctrl+M —— 大多数终端把 Ctrl+M 发成 \r，bubbletea
+		// 统一报为 KeyEnter。所以用户按 Ctrl+M 或 Enter 都能打开查看器。
+		if m.cursor < len(m.items) {
+			bodyH := m.height - 2
+			if bodyH < 1 {
+				bodyH = 1
+			}
+			return m, m.view.Open(m.items[m.cursor], m.width, bodyH)
+		}
 	}
 	return m, nil
+}
+
+// handleView routes keys while the config-file viewer is open. Esc/q close
+// it; everything else feeds the viewport for scrolling.
+func (m MCPAgentsModel) handleView(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
+	if keyPress(km, "esc") || keyPress(km, "q") {
+		m.view.Close()
+		return m, nil
+	}
+	cmd := m.view.Update(km)
+	return m, cmd
 }
 
 func (m *MCPAgentsModel) openAddForm() {
@@ -315,6 +356,9 @@ func (m MCPAgentsModel) handleDelete(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 // ───── View ─────
 
 func (m MCPAgentsModel) View() string {
+	if m.view.active {
+		return m.view.View(m.width)
+	}
 	switch m.popup {
 	case mcpAgentsAdd, mcpAgentsEdit:
 		return m.renderForm()
@@ -436,7 +480,7 @@ func (m MCPAgentsModel) renderList() string {
 }
 
 func (m MCPAgentsModel) renderHelpLine() string {
-	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | r 刷新 | Tab 切换 | q 退出")
+	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | Ctrl+M 查看配置 | r 刷新 | Tab 切换 | Ctrl+P 切模块 | q 退出")
 	if m.width > 2 {
 		return lipgloss.PlaceHorizontal(m.width-2, lipgloss.Right, txt)
 	}
@@ -491,7 +535,7 @@ func (m MCPAgentsModel) renderForm() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", dim.Render("路径指向该 agent 的 MCP 配置文件，分配 MCP 时会写入此文件。"))
+	lines = append(lines, "", popupNoteStyle.Render("路径指向该 agent 的 MCP 配置文件，分配 MCP 时会写入此文件。"))
 
 	if m.formErr != "" {
 		lines = append(lines, "", errStyle.Render("❌ "+m.formErr))
@@ -524,7 +568,6 @@ func (m MCPAgentsModel) renderDeleteConfirm() string {
 	ag := m.items[m.deleteIdx]
 	titleStyle := popupTitleStyle
 	keyStyle := lipgloss.NewStyle().Faint(true)
-	dim := lipgloss.NewStyle().Faint(true)
 
 	// Pre-flight: check for in-use to warn the user before they confirm.
 	hasInUse := m.store.MCPAgentInUse(ag.Name)
@@ -540,7 +583,7 @@ func (m MCPAgentsModel) renderDeleteConfirm() string {
 			Render("⚠ 该 agent 上仍有 MCP 分配，请先取消分配后再删除。"))
 	} else {
 		lines = append(lines, "")
-		lines = append(lines, dim.Render("该 agent 当前没有 MCP 分配，可安全删除（不会改动配置文件）。"))
+		lines = append(lines, popupNoteStyle.Render("该 agent 当前没有 MCP 分配，可安全删除（不会改动配置文件）。"))
 	}
 
 	hint := popupHintLine(lines, "Enter 确认删除 | Esc 取消")

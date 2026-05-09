@@ -414,7 +414,7 @@ func (m ConfigListModel) renderList() string {
 
 	if len(m.items) == 0 {
 		b.WriteString("  (空)\n\n")
-		b.WriteString(renderHelp("a=新增 | r=刷新"))
+		b.WriteString(renderHelp("a=新增 | r=刷新 | Tab 切换 | Ctrl+P 切模块 | q 退出"))
 		b.WriteString("\n")
 		return b.String()
 	}
@@ -502,7 +502,7 @@ func (m ConfigListModel) renderList() string {
 		b.WriteString("  " + row + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(renderHelp("a=新增 | e=编辑 | d=删除 | r=刷新 | ↑↓=移动"))
+	b.WriteString(renderHelp("a=新增 | e=编辑 | d=删除 | r=刷新 | ↑↓=移动 | Tab 切换 | Ctrl+P 切模块 | q 退出"))
 	b.WriteString("\n")
 	return b.String()
 }
