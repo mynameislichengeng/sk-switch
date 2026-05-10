@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,17 +19,21 @@ type MCPWriter interface {
 	// agent add/update so the user catches typos at the form, not when
 	// they later try to assign an MCP. Return nil when the path is OK.
 	Validate(path string) error
-	// Read returns the existing payload registered under `name`, or nil
-	// (with no error) if the file lacks that entry. ErrMCPFileMissing is
-	// returned when the underlying file does not exist on disk.
-	Read(path, name string) (json.RawMessage, error)
-	// Write upserts the payload under `name`. If the file does not exist
+	// ValidateConfig validates the raw config payload (a string) without
+	// touching the file system. Used by AddMCP/UpdateMCP to reject bad
+	// input early. Return nil when the payload is valid for this writer.
+	ValidateConfig(value string) error
+	// Read returns the existing payload registered under `key`, or empty
+	// string (with no error) if the file lacks that entry. ErrMCPFileMissing
+	// is returned when the underlying file does not exist on disk.
+	Read(path, key string) (string, error)
+	// Write upserts the payload under `key`. If the file does not exist
 	// the implementation SHOULD return ErrMCPFileMissing rather than
 	// silently creating it — initial-create policy is the caller's call.
-	Write(path, name string, config json.RawMessage) error
-	// Delete removes `name` from the file; missing entry is a no-op.
+	Write(path, key string, value string) error
+	// Delete removes `key` from the file; missing entry is a no-op.
 	// ErrMCPFileMissing when the file itself is gone.
-	Delete(path, name string) error
+	Delete(path, key string) error
 }
 
 // ErrMCPFileMissing signals the agent's config file is absent, distinct from

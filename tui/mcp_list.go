@@ -120,10 +120,10 @@ func (m MCPListModel) handleList(km tea.KeyMsg) (MCPListModel, tea.Cmd) {
 			return m, nil
 		}
 		mcp := m.mcps[m.cursor]
-		if len(mcp.Assignments) > 0 {
+		if len(mcp.Agents) > 0 {
 			m.popup = mcpPopupBlockedEdit
 			m.blockedMcpName = mcp.Name
-			m.blockedAgents = append([]string(nil), mcp.Assignments...)
+			m.blockedAgents = append([]string(nil), mcp.Agents...)
 			return m, nil
 		}
 		m.form.seedEdit(m.cursor, mcp)
@@ -135,10 +135,10 @@ func (m MCPListModel) handleList(km tea.KeyMsg) (MCPListModel, tea.Cmd) {
 			return m, nil
 		}
 		mcp := m.mcps[m.cursor]
-		if len(mcp.Assignments) > 0 {
+		if len(mcp.Agents) > 0 {
 			m.popup = mcpPopupBlockedDelete
 			m.blockedMcpName = mcp.Name
-			m.blockedAgents = append([]string(nil), mcp.Assignments...)
+			m.blockedAgents = append([]string(nil), mcp.Agents...)
 			return m, nil
 		}
 		m.deleteIdx = m.cursor
@@ -169,21 +169,37 @@ func (m MCPListModel) handleForm(km tea.KeyMsg) (MCPListModel, tea.Cmd) {
 		m.popup = mcpPopupNone
 		return m, refreshCmd(m.store)
 	case keyPress(km, "up"):
-		// On single-line fields, ↑ always moves to the previous field.
-		// In the JSON textarea, only "↑ at the first line" overflows up
-		// to the previous field; otherwise the textarea handles it for
-		// regular cursor movement.
-		if m.form.field != mcpFormFieldJSON || m.form.jsonArea.Line() == 0 {
-			m.form.prevField()
-			return m, nil
+		isTA, typ := m.form.fieldKind()
+		if isTA {
+			if tc, ok := m.form.typeConfigs[typ]; ok {
+				if tc.valueArea.Line() == 0 {
+					m.form.prevField()
+					return m, nil
+				}
+				// Let textarea handle cursor movement.
+				var cmd tea.Cmd
+				m.form, cmd = m.form.updateField(km)
+				return m, cmd
+			}
 		}
+		m.form.prevField()
+		return m, nil
 	case keyPress(km, "down"):
-		// Mirror of up: textarea bottom-edge overflows to the next field.
-		if m.form.field != mcpFormFieldJSON ||
-			m.form.jsonArea.Line() >= m.form.jsonArea.LineCount()-1 {
-			m.form.nextField()
-			return m, nil
+		isTA, typ := m.form.fieldKind()
+		if isTA {
+			if tc, ok := m.form.typeConfigs[typ]; ok {
+				if tc.valueArea.Line() >= tc.valueArea.LineCount()-1 {
+					m.form.nextField()
+					return m, nil
+				}
+				// Let textarea handle cursor movement.
+				var cmd tea.Cmd
+				m.form, cmd = m.form.updateField(km)
+				return m, cmd
+			}
 		}
+		m.form.nextField()
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.form, cmd = m.form.updateField(km)
@@ -201,10 +217,10 @@ func (m MCPListModel) handleDelete(km tea.KeyMsg) (MCPListModel, tea.Cmd) {
 			// Defensive — UI gates this already, but a CLI race or stale
 			// snapshot could surface ErrMCPHasAssignments.
 			if errors.Is(err, config.ErrMCPHasAssignments) {
-				if mcp, ok := m.findByIdx(m.deleteIdx); ok {
-					m.popup = mcpPopupBlockedDelete
-					m.blockedMcpName = mcp.Name
-					m.blockedAgents = append([]string(nil), mcp.Assignments...)
+			if mcp, ok := m.findByIdx(m.deleteIdx); ok {
+				m.popup = mcpPopupBlockedDelete
+				m.blockedMcpName = mcp.Name
+				m.blockedAgents = append([]string(nil), mcp.Agents...)
 				} else {
 					m.popup = mcpPopupNone
 				}

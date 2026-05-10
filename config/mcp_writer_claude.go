@@ -139,25 +139,40 @@ func (MCPWriterClaudeJSON) Validate(path string) error {
 	return nil
 }
 
+// ValidateConfig validates that the value is a valid JSON object.
+func (MCPWriterClaudeJSON) ValidateConfig(value string) error {
+	if len(value) == 0 {
+		return fmt.Errorf("%w: 配置为空", ErrMCPInvalidConfig)
+	}
+	var v any
+	if err := json.Unmarshal([]byte(value), &v); err != nil {
+		return fmt.Errorf("%w: %v", ErrMCPInvalidConfig, err)
+	}
+	if _, ok := v.(map[string]any); !ok {
+		return fmt.Errorf("%w: 顶层必须是对象 {}", ErrMCPInvalidConfig)
+	}
+	return nil
+}
+
 // Read implements MCPWriter.
-func (MCPWriterClaudeJSON) Read(path, name string) (json.RawMessage, error) {
+func (MCPWriterClaudeJSON) Read(path, key string) (string, error) {
 	top, _, err := readClaudeFile(path)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	servers, err := extractServers(top)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	v, ok := servers[name]
+	v, ok := servers[key]
 	if !ok {
-		return nil, nil
+		return "", nil
 	}
-	return v, nil
+	return string(v), nil
 }
 
 // Write implements MCPWriter.
-func (MCPWriterClaudeJSON) Write(path, name string, config json.RawMessage) error {
+func (MCPWriterClaudeJSON) Write(path, key string, value string) error {
 	top, mode, err := readClaudeFile(path)
 	if err != nil {
 		return err
@@ -166,7 +181,7 @@ func (MCPWriterClaudeJSON) Write(path, name string, config json.RawMessage) erro
 	if err != nil {
 		return err
 	}
-	servers[name] = config
+	servers[key] = json.RawMessage(value)
 	if err := putServers(top, servers); err != nil {
 		return err
 	}
@@ -174,7 +189,7 @@ func (MCPWriterClaudeJSON) Write(path, name string, config json.RawMessage) erro
 }
 
 // Delete implements MCPWriter.
-func (MCPWriterClaudeJSON) Delete(path, name string) error {
+func (MCPWriterClaudeJSON) Delete(path, key string) error {
 	top, mode, err := readClaudeFile(path)
 	if err != nil {
 		return err
@@ -183,11 +198,11 @@ func (MCPWriterClaudeJSON) Delete(path, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := servers[name]; !ok {
+	if _, ok := servers[key]; !ok {
 		// nothing to delete; skip the rewrite to avoid touching mtime
 		return nil
 	}
-	delete(servers, name)
+	delete(servers, key)
 	if err := putServers(top, servers); err != nil {
 		return err
 	}

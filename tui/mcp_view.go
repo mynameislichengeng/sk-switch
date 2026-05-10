@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -24,18 +23,28 @@ func renderMCPViewPopup(mcp config.MCP, agents []config.MCPAgent, w, h int) stri
 		gh = dim.Render("(无)")
 	}
 
-	cfg := prettyJSON(mcp.Config)
-	if cfg == "" {
-		cfg = dim.Render("(空)")
-	}
-
 	var lines []string
 	lines = append(lines, titleStyle.Render("MCP详情"), "")
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("名称  :"), mcp.Name))
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("GitHub:"), gh))
-	lines = append(lines, "", keyStyle.Render("config:"))
-	for _, l := range strings.Split(cfg, "\n") {
-		lines = append(lines, "  "+l)
+
+	lines = append(lines, "", titleStyle.Render("配置"), "")
+	if len(mcp.Configs) == 0 {
+		lines = append(lines, popupNoteStyle.Render("  (未配置)"))
+	} else {
+		for typ, tc := range mcp.Configs {
+			lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("类型  :"), typ))
+			lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("Key   :"), tc.Key))
+			val := tc.Value
+			if val == "" {
+				val = dim.Render("(空)")
+			}
+			lines = append(lines, fmt.Sprintf("%s", keyStyle.Render("Value :")))
+			for _, l := range strings.Split(val, "\n") {
+				lines = append(lines, "  "+l)
+			}
+			lines = append(lines, "")
+		}
 	}
 
 	lines = append(lines, "", titleStyle.Render("分配AGENTS"), "")
@@ -86,8 +95,8 @@ func renderMCPViewPopup(mcp config.MCP, agents []config.MCPAgent, w, h int) stri
 // mcpAssignedSet builds a name-set from the MCP's recorded assignments for
 // O(1) lookup during render.
 func mcpAssignedSet(mcp config.MCP) map[string]bool {
-	out := make(map[string]bool, len(mcp.Assignments))
-	for _, a := range mcp.Assignments {
+	out := make(map[string]bool, len(mcp.Agents))
+	for _, a := range mcp.Agents {
 		out[a] = true
 	}
 	return out
@@ -95,4 +104,4 @@ func mcpAssignedSet(mcp config.MCP) map[string]bool {
 
 // renderJSON exists so other popups (notably the conflict dialog in commit 4)
 // can share the same pretty-printer without leaking encoding/json into them.
-func renderJSON(raw json.RawMessage) string { return prettyJSON(raw) }
+func renderJSON(raw string) string { return prettyJSON(raw) }

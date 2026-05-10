@@ -448,7 +448,7 @@ func (m MCPAgentsModel) renderList() string {
 	// Compute per-agent assignment counts for the "已分配" column.
 	counts := map[string]int{}
 	for _, mcp := range m.mcps {
-		for _, an := range mcp.Assignments {
+		for _, an := range mcp.Agents {
 			counts[an]++
 		}
 	}

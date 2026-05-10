@@ -43,7 +43,7 @@ func TestClaudeWriterWrite_FileMissing_ReturnsErr(t *testing.T) {
 	w := MCPWriterClaudeJSON{}
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "nope", ".claude.json")
-	err := w.Write(missing, "test", json.RawMessage(`{"command":"x"}`))
+	err := w.Write(missing, "test", `{"command":"x"}`)
 	if err != ErrMCPFileMissing {
 		t.Fatalf("expected ErrMCPFileMissing, got %v", err)
 	}
@@ -57,7 +57,7 @@ func TestClaudeWriterWrite_AddsToEmptyFile_PreservesOtherKeys(t *testing.T) {
   "mcpServers": {}
 }`
 	path := writerScratchFile(t, initial)
-	cfg := json.RawMessage(`{"command":"bunx","args":["-y","figma-developer-mcp@latest"]}`)
+	cfg := `{"command":"bunx","args":["-y","figma-developer-mcp@latest"]}`
 	if err := w.Write(path, "Framelink MCP for Figma", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestClaudeWriterWrite_NoMcpServersKey_CreatesIt(t *testing.T) {
 	w := MCPWriterClaudeJSON{}
 	const initial = `{"unrelated": 1}`
 	path := writerScratchFile(t, initial)
-	cfg := json.RawMessage(`{"command":"x"}`)
+	cfg := `{"command":"x"}`
 	if err := w.Write(path, "n1", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestClaudeWriterWrite_OverwritesExistingKey(t *testing.T) {
 	w := MCPWriterClaudeJSON{}
 	const initial = `{"mcpServers": {"n1": {"command":"old"}, "n2": {"command":"keep"}}}`
 	path := writerScratchFile(t, initial)
-	cfg := json.RawMessage(`{"command":"new"}`)
+	cfg := `{"command":"new"}`
 	if err := w.Write(path, "n1", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestClaudeWriterRead_PresentAndAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
-	json.Unmarshal(got, &v)
+	json.Unmarshal([]byte(got), &v)
 	if v["command"] != "X" {
 		t.Errorf("Read returned wrong payload: %v", v)
 	}
@@ -138,8 +138,8 @@ func TestClaudeWriterRead_PresentAndAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missing != nil {
-		t.Errorf("expected nil for missing key, got %v", missing)
+	if missing != "" {
+		t.Errorf("expected empty string for missing key, got %v", missing)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestClaudeWriterAtomicity_FileModePreserved(t *testing.T) {
 	if err := os.Chmod(path, 0640); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Write(path, "x", json.RawMessage(`{"command":"y"}`)); err != nil {
+	if err := w.Write(path, "x", `{"command":"y"}`); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -218,7 +218,7 @@ func TestClaudeWriter_RoundtripPreservesNestedFields(t *testing.T) {
   }
 }`
 	path := writerScratchFile(t, initial)
-	cfg := json.RawMessage(`{"command":"bunx","args":["-y","cursor-talk-to-figma-mcp@latest"]}`)
+	cfg := `{"command":"bunx","args":["-y","cursor-talk-to-figma-mcp@latest"]}`
 	if err := w.Write(path, "TalkToFigma", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +300,34 @@ func TestClaudeWriterValidate(t *testing.T) {
 		os.WriteFile(p, []byte(`[1,2]`), 0644)
 		if err := w.Validate(p); err == nil {
 			t.Errorf("array should be rejected by Validate")
+		}
+	})
+}
+
+func TestClaudeWriterValidateConfig(t *testing.T) {
+	w := MCPWriterClaudeJSON{}
+
+	t.Run("valid JSON object", func(t *testing.T) {
+		if err := w.ValidateConfig(`{"command":"x"}`); err != nil {
+			t.Errorf("expected valid, got %v", err)
+		}
+	})
+
+	t.Run("empty string rejected", func(t *testing.T) {
+		if err := w.ValidateConfig(""); err == nil {
+			t.Errorf("expected error for empty string")
+		}
+	})
+
+	t.Run("array rejected", func(t *testing.T) {
+		if err := w.ValidateConfig(`[1,2]`); err == nil {
+			t.Errorf("expected error for array")
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		if err := w.ValidateConfig(`{bad`); err == nil {
+			t.Errorf("expected error for malformed JSON")
 		}
 	})
 }

@@ -21,9 +21,19 @@ func newStoreInTemp(t *testing.T) *Store {
 	return s
 }
 
-func mustAddMCP(t *testing.T, s *Store, name, gh, cfg string) {
+func mustAddMCP(t *testing.T, s *Store, name, gh, value string) {
 	t.Helper()
-	if err := s.AddMCP(MCP{Name: name, GithubURL: gh, Config: json.RawMessage(cfg)}); err != nil {
+	mcp := MCP{
+		Name:      name,
+		GithubURL: gh,
+		Configs: map[string]TypeConfig{
+			MCPWriterClaudeJSONType: {
+				Key:   name,
+				Value: value,
+			},
+		},
+	}
+	if err := s.AddMCP(mcp); err != nil {
 		t.Fatalf("AddMCP(%q): %v", name, err)
 	}
 }
@@ -52,7 +62,12 @@ func makeAgentFile(t *testing.T, content string) string {
 func TestStore_AddMCP_RejectsDuplicateName(t *testing.T) {
 	s := newStoreInTemp(t)
 	mustAddMCP(t, s, "n1", "", `{"command":"x"}`)
-	err := s.AddMCP(MCP{Name: "n1", Config: json.RawMessage(`{"command":"y"}`)})
+	err := s.AddMCP(MCP{
+		Name: "n1",
+		Configs: map[string]TypeConfig{
+			MCPWriterClaudeJSONType: {Key: "n1", Value: `{"command":"y"}`},
+		},
+	})
 	if !errors.Is(err, ErrMCPNameExists) {
 		t.Errorf("expected ErrMCPNameExists, got %v", err)
 	}
@@ -61,7 +76,13 @@ func TestStore_AddMCP_RejectsDuplicateName(t *testing.T) {
 func TestStore_AddMCP_RejectsDuplicateGithub_AllowsEmpty(t *testing.T) {
 	s := newStoreInTemp(t)
 	mustAddMCP(t, s, "n1", "https://github.com/a/b", `{"command":"x"}`)
-	err := s.AddMCP(MCP{Name: "n2", GithubURL: "https://github.com/a/b", Config: json.RawMessage(`{"command":"y"}`)})
+	err := s.AddMCP(MCP{
+		Name:      "n2",
+		GithubURL: "https://github.com/a/b",
+		Configs: map[string]TypeConfig{
+			MCPWriterClaudeJSONType: {Key: "n2", Value: `{"command":"y"}`},
+		},
+	})
 	if !errors.Is(err, ErrMCPGithubExists) {
 		t.Errorf("expected ErrMCPGithubExists, got %v", err)
 	}
@@ -73,7 +94,12 @@ func TestStore_AddMCP_RejectsDuplicateGithub_AllowsEmpty(t *testing.T) {
 func TestStore_AddMCP_RejectsNonObjectConfig(t *testing.T) {
 	s := newStoreInTemp(t)
 	for _, bad := range []string{`[1,2]`, `"string"`, `42`, `null`, ``} {
-		err := s.AddMCP(MCP{Name: "x", Config: json.RawMessage(bad)})
+		err := s.AddMCP(MCP{
+			Name: "x",
+			Configs: map[string]TypeConfig{
+				MCPWriterClaudeJSONType: {Key: "x", Value: bad},
+			},
+		})
 		if !errors.Is(err, ErrMCPInvalidConfig) {
 			t.Errorf("AddMCP(%q): expected ErrMCPInvalidConfig, got %v", bad, err)
 		}
@@ -87,7 +113,12 @@ func TestStore_UpdateMCP_BlocksWhenAssigned(t *testing.T) {
 	if err := s.AssignMCP("x", "ag", false); err != nil {
 		t.Fatal(err)
 	}
-	err := s.UpdateMCP(0, MCP{Name: "x2", Config: json.RawMessage(`{"command":"b"}`)})
+	err := s.UpdateMCP(0, MCP{
+		Name: "x2",
+		Configs: map[string]TypeConfig{
+			MCPWriterClaudeJSONType: {Key: "x2", Value: `{"command":"b"}`},
+		},
+	})
 	if !errors.Is(err, ErrMCPHasAssignments) {
 		t.Errorf("expected ErrMCPHasAssignments, got %v", err)
 	}
@@ -232,7 +263,7 @@ func TestStore_UnassignMCP_RemovesFromAgentFile(t *testing.T) {
 	}
 }
 
-func TestStore_UpdateMCPAgent_RenamePropagatesAssignments(t *testing.T) {
+func TestStore_UpdateMCPAgent_RenamePropagatesAgents(t *testing.T) {
 	s := newStoreInTemp(t)
 	mustAddMCP(t, s, "n", "", `{"command":"x"}`)
 	agentPath := makeAgentFile(t, `{"mcpServers":{}}`)
@@ -247,7 +278,7 @@ func TestStore_UpdateMCPAgent_RenamePropagatesAssignments(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !s.IsMCPAssigned("n", "new-name") {
-		t.Errorf("rename did not propagate to assignments")
+		t.Errorf("rename did not propagate to agents")
 	}
 	if s.IsMCPAssigned("n", "old-name") {
 		t.Errorf("old name still recorded")

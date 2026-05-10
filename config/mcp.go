@@ -7,24 +7,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
+
+// TypeConfig holds the key-value pair for a single MCP writer type.
+// Key is the identifier written into the agent's config file.
+// Value is the raw config payload as a string (JSON, TOML, etc.).
+type TypeConfig struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
 
 // MCP represents a single Model Context Protocol server registration managed
 // by sk-switch.
 //
 // mcp-data.json is the source of truth for both the MCP itself and the set
-// of agents it has been assigned to (Assignments). The actual
-// per-agent config file (e.g. ~/.claude/.claude.json) is only touched at
-// assign/unassign time; "is this assigned" queries always answer from
-// Assignments here, not by re-scanning agent files.
+// of agents it has been assigned to (Agents). The actual per-agent config
+// file is only touched at assign/unassign time; "is this assigned" queries
+// always answer from Agents here, not by re-scanning agent files.
 //
-// Config is stored as a raw JSON value (the object that gets written under
-// mcpServers[name]). It is validated to be a JSON object on add/update.
+// Configs is a map of writer type tag → TypeConfig, allowing different
+// payloads for different agent config formats (claude-json vs codex-toml).
 type MCP struct {
-	Name        string          `json:"name"`
-	GithubURL   string          `json:"github,omitempty"`
-	Config      json.RawMessage `json:"config"`
-	Assignments []string        `json:"assignments,omitempty"`
+	Name      string                 `json:"name"`
+	GithubURL string                 `json:"github,omitempty"`
+	Configs   map[string]TypeConfig  `json:"configs"`
+	Agents    []string               `json:"agents,omitempty"`
 }
 
 const mcpDataFileName = "mcp-data.json"
@@ -42,7 +51,7 @@ var (
 	ErrMCPAgentNotFound    = errors.New("MCP agent 不存在")
 	ErrMCPHasAssignments   = errors.New("MCP 已被分配到 agent，无法操作")
 	ErrMCPAgentInUse       = errors.New("MCP agent 上仍有 MCP 分配，无法删除")
-	ErrMCPInvalidConfig    = errors.New("config 必须是 JSON 对象")
+	ErrMCPInvalidConfig    = errors.New("config 格式不正确")
 	ErrMCPAgentTypeUnknown = errors.New("未注册的 MCP agent 类型")
 )
 
@@ -53,8 +62,8 @@ var (
 type MCPConflict struct {
 	MCPName     string
 	AgentName   string
-	ExistingRaw json.RawMessage
-	NewRaw      json.RawMessage
+	ExistingRaw string
+	NewRaw      string
 }
 
 func (e *MCPConflict) Error() string {
@@ -90,40 +99,55 @@ func saveMCPs(list []MCP) error {
 	return os.WriteFile(mcpDataFilePath(), data, 0644)
 }
 
-// ValidateMCPConfig parses raw bytes and returns ErrMCPInvalidConfig when the
-// payload is not a JSON object (array / scalar / malformed). Used by AddMCP /
-// UpdateMCP to reject bad input early.
-func ValidateMCPConfig(raw json.RawMessage) error {
-	if len(raw) == 0 {
-		return fmt.Errorf("%w: 配置为空", ErrMCPInvalidConfig)
+// ValidateMCPConfigs validates every TypeConfig in the map by delegating to
+// the corresponding MCPWriter's ValidateConfig. Returns ErrMCPInvalidConfig
+// when any entry fails validation or when the map is empty.
+func ValidateMCPConfigs(configs map[string]TypeConfig) error {
+	if len(configs) == 0 {
+		return fmt.Errorf("%w: 至少需要配置一个类型", ErrMCPInvalidConfig)
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return fmt.Errorf("%w: %v", ErrMCPInvalidConfig, err)
-	}
-	if _, ok := v.(map[string]any); !ok {
-		return fmt.Errorf("%w: 顶层必须是对象 {}", ErrMCPInvalidConfig)
+	for typ, tc := range configs {
+		if tc.Key == "" {
+			return fmt.Errorf("%w: %s 的 key 不能为空", ErrMCPInvalidConfig, typ)
+		}
+		writer, err := MCPWriterFor(typ)
+		if err != nil {
+			return fmt.Errorf("%w: 未找到 writer %q", ErrMCPInvalidConfig, typ)
+		}
+		if err := writer.ValidateConfig(tc.Value); err != nil {
+			return fmt.Errorf("%w (%s): %v", ErrMCPInvalidConfig, typ, err)
+		}
 	}
 	return nil
 }
 
-// equivalentJSON reports whether two raw JSON payloads are structurally
-// identical (same keys / values regardless of whitespace or key order).
-// Used to decide whether an "existing key" in an agent file conflicts with
-// the user's stored config or merely differs in formatting.
-func equivalentJSON(a, b json.RawMessage) bool {
+// equivalentString reports whether two string payloads are structurally
+// identical. For JSON payloads it uses json.Unmarshal+Marshal for deep
+// comparison; for TOML it uses toml.Unmarshal and re-serializes; for other
+// formats it falls back to direct string comparison.
+func equivalentString(a, b string) bool {
+	// Try JSON deep comparison first.
 	var av, bv any
-	if err := json.Unmarshal(a, &av); err != nil {
-		return false
+	if err := json.Unmarshal([]byte(a), &av); err == nil {
+		if err := json.Unmarshal([]byte(b), &bv); err == nil {
+			aOut, _ := json.Marshal(av)
+			bOut, _ := json.Marshal(bv)
+			return string(aOut) == string(bOut)
+		}
 	}
-	if err := json.Unmarshal(b, &bv); err != nil {
-		return false
+	// Try TOML deep comparison.
+	var at, bt any
+	if err := toml.Unmarshal([]byte(a), &at); err == nil {
+		if err := toml.Unmarshal([]byte(b), &bt); err == nil {
+			// TOML doesn't have a standard Marshal, so compare the parsed
+			// structures via JSON serialization (both represent maps/arrays).
+			aOut, _ := json.Marshal(at)
+			bOut, _ := json.Marshal(bt)
+			return string(aOut) == string(bOut)
+		}
 	}
-	// Marshal back with sorted keys via the standard encoder (Go sorts map
-	// keys deterministically) and compare byte-wise.
-	aOut, _ := json.Marshal(av)
-	bOut, _ := json.Marshal(bv)
-	return string(aOut) == string(bOut)
+	// Fall back to direct string comparison for non-JSON/non-TOML.
+	return a == b
 }
 
 // normalizeMCPName trims surrounding whitespace; empty result rejected by

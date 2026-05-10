@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -12,8 +13,7 @@ import (
 )
 
 // mcpFormMode says whether the form is creating a new MCP or editing an
-// existing one. The form lives inside MCPListModel and is mutually exclusive
-// with the view/delete/blocked popups.
+// existing one.
 type mcpFormMode int
 
 const (
@@ -21,16 +21,15 @@ const (
 	mcpFormEdit
 )
 
-const (
-	mcpFormFieldName = iota
-	mcpFormFieldGithub
-	mcpFormFieldJSON
-	mcpFormFieldCount
-)
+// typeConfigForm holds the key/value inputs for one writer type.
+type typeConfigForm struct {
+	key       string
+	keyCursor int
+	valueArea textarea.Model
+}
 
-// mcpForm wraps the three input fields + edit-target index. Single-line
-// fields use the existing rune-cursor helpers; the JSON field uses a
-// bubbles/textarea so multi-line paste from the user's clipboard works.
+// mcpForm supports dynamic fields: name + github + (key/value) per registered
+// writer type. fieldIdx is the global cursor across all fields.
 type mcpForm struct {
 	mode    mcpFormMode
 	editIdx int
@@ -40,41 +39,46 @@ type mcpForm struct {
 	github       string
 	githubCursor int
 
-	jsonArea textarea.Model
+	typeConfigs map[string]*typeConfigForm // writer type tag → form state
+	typeOrder   []string                   // stable iteration order
 
-	field int // mcpFormFieldName .. mcpFormFieldJSON
-	err   string
+	fieldIdx int // 0=name, 1=github, then per type: key, value
+	err      string
 
 	width  int
 	height int
 }
 
-// newMCPForm builds a fresh form. For edit mode call seedEdit() afterwards.
+// newMCPForm builds a fresh form with one textarea per registered writer type.
 func newMCPForm() mcpForm {
-	ta := textarea.New()
-	ta.Placeholder = `{"command": "bunx", "args": ["-y", "..."]}`
-	ta.ShowLineNumbers = false
-	ta.CharLimit = 0
-	ta.MaxHeight = 12
-	ta.SetHeight(8)
-	// Strip the textarea's own Tab/Shift+Tab bindings so our parent can
-	// reliably grab them as field-switch keys; otherwise textarea inserts
-	// a tab character and the form gets stuck.
-	ta.KeyMap.InsertNewline.SetKeys("enter")
-	// Disable the textarea's Ctrl+S binding (none by default, but explicit
-	// note: Ctrl+S is owned by the parent form for "save").
-	ta.Focus()
+	types := config.MCPAgentTypes()
+	sort.Strings(types)
+
+	tcf := make(map[string]*typeConfigForm, len(types))
+	for _, typ := range types {
+		ta := textarea.New()
+		ta.Placeholder = fmt.Sprintf("配置 %s 的 value", typ)
+		ta.ShowLineNumbers = false
+		ta.CharLimit = 0
+		ta.MaxHeight = 5
+		ta.SetHeight(4)
+		ta.KeyMap.InsertNewline.SetKeys("enter")
+		ta.Blur()
+		tcf[typ] = &typeConfigForm{valueArea: ta}
+	}
+
 	return mcpForm{
-		mode:     mcpFormAdd,
-		field:    mcpFormFieldName,
-		jsonArea: ta,
+		mode:        mcpFormAdd,
+		fieldIdx:    0,
+		typeConfigs: tcf,
+		typeOrder:   types,
 	}
 }
 
 func (f *mcpForm) SetSize(w, h int) {
 	f.width = w
 	f.height = h
-	// Leave room for borders, labels, hint line, error line. Conservative.
+
 	taW := w - 18
 	if taW < 30 {
 		taW = 30
@@ -82,20 +86,19 @@ func (f *mcpForm) SetSize(w, h int) {
 	if taW > 100 {
 		taW = 100
 	}
-	f.jsonArea.SetWidth(taW)
-	taH := h - 14
-	if taH < 4 {
-		taH = 4
+	for _, tc := range f.typeConfigs {
+		tc.valueArea.SetWidth(taW)
+		tc.valueArea.SetHeight(4)
 	}
-	if taH > 12 {
-		taH = 12
-	}
-	f.jsonArea.SetHeight(taH)
 }
 
-// seedEdit fills the form from an existing MCP for the edit flow. The JSON
-// payload is re-indented for readability since the on-disk form may have
-// been minified by an earlier save.
+// totalFieldCount returns the number of focusable fields.
+// 0=name, 1=github, then for each type: key, value.
+func (f mcpForm) totalFieldCount() int {
+	return 2 + len(f.typeOrder)*2
+}
+
+// seedEdit fills the form from an existing MCP.
 func (f *mcpForm) seedEdit(idx int, mcp config.MCP) {
 	f.mode = mcpFormEdit
 	f.editIdx = idx
@@ -103,9 +106,25 @@ func (f *mcpForm) seedEdit(idx int, mcp config.MCP) {
 	f.nameCursor = runeCount(f.name)
 	f.github = mcp.GithubURL
 	f.githubCursor = runeCount(f.github)
-	f.jsonArea.SetValue(prettyJSON(mcp.Config))
-	f.field = mcpFormFieldName
+
+	// Reset all type configs then fill from mcp.Configs.
+	for _, tc := range f.typeConfigs {
+		tc.key = ""
+		tc.keyCursor = 0
+		tc.valueArea.Reset()
+		tc.valueArea.Blur()
+	}
+	for typ, cfg := range mcp.Configs {
+		if tc, ok := f.typeConfigs[typ]; ok {
+			tc.key = cfg.Key
+			tc.keyCursor = runeCount(cfg.Key)
+			tc.valueArea.SetValue(cfg.Value)
+		}
+	}
+
+	f.fieldIdx = 0
 	f.err = ""
+	f.syncFocus()
 }
 
 func (f *mcpForm) seedAdd() {
@@ -115,32 +134,102 @@ func (f *mcpForm) seedAdd() {
 	f.nameCursor = 0
 	f.github = ""
 	f.githubCursor = 0
-	f.jsonArea.Reset()
-	f.field = mcpFormFieldName
+
+	for _, tc := range f.typeConfigs {
+		tc.key = ""
+		tc.keyCursor = 0
+		tc.valueArea.Reset()
+		tc.valueArea.Blur()
+	}
+
+	f.fieldIdx = 0
 	f.err = ""
+	f.syncFocus()
 }
 
-// activeText returns a pointer to the rune-buffer for the currently focused
-// single-line field (name/github), or nil when the JSON textarea is focused.
-func (f *mcpForm) activeText() (*string, *int) {
-	switch f.field {
-	case mcpFormFieldName:
+// fieldKind returns what kind of field the current fieldIdx points to.
+func (f mcpForm) fieldKind() (isTextarea bool, typeTag string) {
+	switch f.fieldIdx {
+	case 0, 1:
+		return false, ""
+	default:
+		off := f.fieldIdx - 2
+		if off%2 == 1 {
+			// Odd offset → value textarea.
+			idx := off / 2
+			if idx < len(f.typeOrder) {
+				return true, f.typeOrder[idx]
+			}
+		}
+		return false, ""
+	}
+}
+
+func (f *mcpForm) nextField() {
+	n := f.totalFieldCount()
+	if n > 0 {
+		f.fieldIdx = (f.fieldIdx + 1) % n
+	}
+	f.syncFocus()
+}
+
+func (f *mcpForm) prevField() {
+	n := f.totalFieldCount()
+	if n > 0 {
+		f.fieldIdx = (f.fieldIdx - 1 + n) % n
+	}
+	f.syncFocus()
+}
+
+func (f *mcpForm) syncFocus() {
+	// Blur all textareas first.
+	for _, tc := range f.typeConfigs {
+		tc.valueArea.Blur()
+	}
+	isTA, typ := f.fieldKind()
+	if isTA {
+		if tc, ok := f.typeConfigs[typ]; ok {
+			tc.valueArea.Focus()
+		}
+	}
+}
+
+// activeSingleLine returns the (text, cursor) for the currently focused
+// single-line field, or nil when a textarea is focused.
+func (f mcpForm) activeSingleLine() (*string, *int) {
+	switch f.fieldIdx {
+	case 0:
 		return &f.name, &f.nameCursor
-	case mcpFormFieldGithub:
+	case 1:
 		return &f.github, &f.githubCursor
+	default:
+		off := f.fieldIdx - 2
+		if off%2 == 0 {
+			// Even offset → key field.
+			idx := off / 2
+			if idx < len(f.typeOrder) {
+				if tc, ok := f.typeConfigs[f.typeOrder[idx]]; ok {
+					return &tc.key, &tc.keyCursor
+				}
+			}
+		}
 	}
 	return nil, nil
 }
 
-// updateField responds to a key event for the active field. Returns the
-// model unchanged + nil cmd when the key is unhandled at this layer.
+// updateField routes a key event to the active field.
 func (f mcpForm) updateField(km tea.KeyMsg) (mcpForm, tea.Cmd) {
-	if f.field == mcpFormFieldJSON {
-		var cmd tea.Cmd
-		f.jsonArea, cmd = f.jsonArea.Update(km)
-		return f, cmd
+	isTA, typ := f.fieldKind()
+	if isTA {
+		if tc, ok := f.typeConfigs[typ]; ok {
+			var cmd tea.Cmd
+			tc.valueArea, cmd = tc.valueArea.Update(km)
+			return f, cmd
+		}
+		return f, nil
 	}
-	target, cursor := f.activeText()
+
+	target, cursor := f.activeSingleLine()
 	if target == nil {
 		return f, nil
 	}
@@ -169,51 +258,41 @@ func (f mcpForm) updateField(km tea.KeyMsg) (mcpForm, tea.Cmd) {
 	return f, nil
 }
 
-// nextField / prevField cycle through the three form fields and (re-)focus
-// the JSON textarea as needed.
-func (f *mcpForm) nextField() {
-	f.field = (f.field + 1) % mcpFormFieldCount
-	f.syncFocus()
-}
-
-func (f *mcpForm) prevField() {
-	f.field = (f.field - 1 + mcpFormFieldCount) % mcpFormFieldCount
-	f.syncFocus()
-}
-
-func (f *mcpForm) syncFocus() {
-	if f.field == mcpFormFieldJSON {
-		f.jsonArea.Focus()
-	} else {
-		f.jsonArea.Blur()
-	}
-}
-
-// commit attempts to validate inputs and call the right Store method. On
-// success, returns nil; on validation failure, sets f.err and returns the
-// non-nil error so the caller knows to keep the form open.
+// commit validates inputs and calls the Store. Returns an error when
+// validation fails so the caller keeps the form open.
 func (f *mcpForm) commit(store *config.Store) error {
 	name := strings.TrimSpace(f.name)
 	gh := strings.TrimSpace(f.github)
-	jsonStr := strings.TrimSpace(f.jsonArea.Value())
 
 	if name == "" {
 		f.err = "名称不能为空"
 		return fmt.Errorf("name empty")
 	}
-	if jsonStr == "" {
-		f.err = "config JSON 不能为空"
-		return fmt.Errorf("json empty")
+
+	configs := make(map[string]config.TypeConfig)
+	for _, typ := range f.typeOrder {
+		tc := f.typeConfigs[typ]
+		key := strings.TrimSpace(tc.key)
+		value := strings.TrimSpace(tc.valueArea.Value())
+		if key != "" && value != "" {
+			configs[typ] = config.TypeConfig{Key: key, Value: value}
+		}
 	}
-	raw := json.RawMessage(jsonStr)
-	if err := config.ValidateMCPConfig(raw); err != nil {
+
+	if len(configs) == 0 {
+		f.err = "至少需要配置一个类型的 key 和 value"
+		return fmt.Errorf("no configs")
+	}
+
+	if err := config.ValidateMCPConfigs(configs); err != nil {
 		f.err = err.Error()
 		return err
 	}
+
 	mcp := config.MCP{
 		Name:      name,
 		GithubURL: gh,
-		Config:    raw,
+		Configs:   configs,
 	}
 	var err error
 	if f.mode == mcpFormAdd {
@@ -228,8 +307,7 @@ func (f *mcpForm) commit(store *config.Store) error {
 	return nil
 }
 
-// View renders the form as a centered popup. Caller is responsible for
-// placing the result inside the surrounding tab content.
+// View renders the form as a centered popup.
 func (f mcpForm) View() string {
 	titleStyle := popupTitleStyle
 	keyStyle := lipgloss.NewStyle().Faint(true)
@@ -244,23 +322,43 @@ func (f mcpForm) View() string {
 	var lines []string
 	lines = append(lines, titleStyle.Render(title), "")
 
-	// Name field
+	// Name
 	lines = append(lines, renderSingleLine("名称  :", f.name, f.nameCursor,
-		f.field == mcpFormFieldName, keyStyle, activeStyle))
+		f.fieldIdx == 0, keyStyle, activeStyle))
+	// GitHub
 	lines = append(lines, renderSingleLine("GitHub:", f.github, f.githubCursor,
-		f.field == mcpFormFieldGithub, keyStyle, activeStyle))
+		f.fieldIdx == 1, keyStyle, activeStyle))
 
-	// JSON field — multi-line textarea
-	jsonHeader := keyStyle.Render("JSON  :")
-	if f.field == mcpFormFieldJSON {
-		jsonHeader = activeStyle.Render("JSON  :")
-	}
-	lines = append(lines, jsonHeader)
-	// Indent the textarea body by 2 spaces so it visually aligns with the
-	// other field bodies.
-	taLines := strings.Split(f.jsonArea.View(), "\n")
-	for _, l := range taLines {
-		lines = append(lines, "  "+l)
+	// Per-type fields
+	for i, typ := range f.typeOrder {
+		tc := f.typeConfigs[typ]
+		keyFieldIdx := 2 + i*2
+		valFieldIdx := keyFieldIdx + 1
+
+		lines = append(lines, "")
+		lines = append(lines, keyStyle.Render("--- "+typ+" ---"))
+
+		// Key
+		keyActive := f.fieldIdx == keyFieldIdx
+		keyLabel := "Key   :"
+		if keyActive {
+			keyLabel = activeStyle.Render(keyLabel)
+		}
+		keyDisplay := tc.key
+		if keyActive {
+			keyDisplay = renderWithCursor(tc.key, tc.keyCursor)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", keyLabel, keyDisplay))
+
+		// Value (textarea)
+		valLabel := "Value :"
+		if f.fieldIdx == valFieldIdx {
+			valLabel = activeStyle.Render(valLabel)
+		}
+		lines = append(lines, valLabel)
+		for _, l := range strings.Split(tc.valueArea.View(), "\n") {
+			lines = append(lines, "  "+l)
+		}
 	}
 
 	if f.err != "" {
@@ -289,7 +387,7 @@ func (f mcpForm) View() string {
 }
 
 // renderSingleLine formats one labeled single-line field with optional
-// cursor block when active. Centralized so name/github render identically.
+// cursor block when active.
 func renderSingleLine(label, value string, cursor int, active bool,
 	labelStyle, activeStyle lipgloss.Style) string {
 	display := value
@@ -303,18 +401,18 @@ func renderSingleLine(label, value string, cursor int, active bool,
 }
 
 // prettyJSON re-indents bytes for editor display. On parse failure returns
-// the raw input — the user may have left the previous value mid-edit.
-func prettyJSON(raw json.RawMessage) string {
+// the raw input.
+func prettyJSON(raw string) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return string(raw)
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
 	}
 	out, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return string(raw)
+		return raw
 	}
 	return string(out)
 }
