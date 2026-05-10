@@ -290,6 +290,119 @@ func TestNilRootNoPanic(t *testing.T) {
 	v.Collapse()
 }
 
+func TestFindBasic(t *testing.T) {
+	// Children are sorted alphabetically: items, meta, name. Pre-order
+	// DFS visits root → items → 1 → 2 → meta → meta.name → name. The
+	// first node whose key contains "name" is therefore meta.name (the
+	// nested one), NOT the top-level "name" — even though both have the
+	// same key, the nested one comes first in pre-order.
+	root, _ := Build([]byte(`{"name": "x", "items": [1, 2], "meta": {"name": "y"}}`))
+	v := NewViewer(root, Style{})
+	n := v.Find("name")
+	if n == nil {
+		t.Fatal("Find returned nil for 'name'")
+	}
+	expected := root.Children[1].Children[0] // meta.name
+	if n != expected {
+		t.Errorf("Find('name'): matched node with key=%q value=%q, want meta.name (key=%q value=%q)",
+			n.Key, n.ScalarRaw, expected.Key, expected.ScalarRaw)
+	}
+	if v.Cursor() != n {
+		t.Errorf("cursor not at match")
+	}
+}
+
+func TestFindNoMatchLeavesStateAlone(t *testing.T) {
+	root, _ := Build([]byte(`{"a": 1}`))
+	v := NewViewer(root, Style{})
+	cursorBefore := v.Cursor()
+	if n := v.Find("nonexistent"); n != nil {
+		t.Errorf("Find returned %v, want nil", n)
+	}
+	if v.Cursor() != cursorBefore {
+		t.Error("cursor moved despite no-match Find")
+	}
+}
+
+func TestFindEmptyOrWhitespaceQuery(t *testing.T) {
+	root, _ := Build([]byte(`{"a": 1}`))
+	v := NewViewer(root, Style{})
+	for _, q := range []string{"", "   ", "\t\n"} {
+		if n := v.Find(q); n != nil {
+			t.Errorf("Find(%q) = %v, want nil for empty/whitespace query", q, n)
+		}
+	}
+}
+
+func TestFindAutoExpandsAncestors(t *testing.T) {
+	root, _ := Build([]byte(`{"outer": {"inner": {"target": 42}}}`))
+	v := NewViewer(root, Style{})
+	outer := root.Children[0]
+	inner := outer.Children[0]
+	if outer.Expanded || inner.Expanded {
+		t.Fatal("expected outer/inner collapsed initially")
+	}
+	if n := v.Find("target"); n == nil {
+		t.Fatal("Find('target') returned nil")
+	}
+	if !outer.Expanded {
+		t.Error("outer must be expanded after find")
+	}
+	if !inner.Expanded {
+		t.Error("inner must be expanded after find")
+	}
+}
+
+func TestFindMatchesScalarValue(t *testing.T) {
+	root, _ := Build([]byte(`{"theme": "dark", "name": "WezTerm"}`))
+	v := NewViewer(root, Style{})
+	n := v.Find("WezTerm")
+	if n == nil {
+		t.Fatal("Find('WezTerm') returned nil")
+	}
+	if n.Key != "name" {
+		t.Errorf("Find by scalar value: got key %q, want name", n.Key)
+	}
+}
+
+func TestFindCaseInsensitive(t *testing.T) {
+	root, _ := Build([]byte(`{"FooBar": 1}`))
+	v := NewViewer(root, Style{})
+	if n := v.Find("foobar"); n == nil {
+		t.Error("case-insensitive match failed")
+	}
+}
+
+func TestFindNextWraps(t *testing.T) {
+	// Sorted alphabetically: a_match, b_match → first match is a_match.
+	root, _ := Build([]byte(`{"a_match": 1, "b_match": 2, "skip": 0}`))
+	v := NewViewer(root, Style{})
+	n1 := v.Find("match")
+	if n1 == nil || n1.Key != "a_match" {
+		t.Fatalf("Find first: got %v, want a_match", n1)
+	}
+	n2 := v.FindNext("match")
+	if n2 == nil || n2.Key != "b_match" {
+		t.Errorf("FindNext: got %v, want b_match", n2)
+	}
+	n3 := v.FindNext("match") // wraps from end back to top
+	if n3 == nil || n3.Key != "a_match" {
+		t.Errorf("FindNext wrap: got %v, want a_match", n3)
+	}
+}
+
+func TestFindNextStartsFromCursor(t *testing.T) {
+	// Cursor in the middle of the tree — FindNext should skip earlier
+	// matches and land on a match strictly after the cursor.
+	root, _ := Build([]byte(`{"a_match": 1, "b_match": 2, "c_match": 3}`))
+	v := NewViewer(root, Style{})
+	v.cursor = root.Children[1] // b_match
+	n := v.FindNext("match")
+	if n == nil || n.Key != "c_match" {
+		t.Errorf("FindNext from b_match: got %v, want c_match", n)
+	}
+}
+
 // TestSetStyleInvalidatesCache asserts that swapping the style after a
 // previous Render flips the cache-dirty flag so the next Render rebuilds.
 // We test the flag directly because lipgloss strips ANSI in non-TTY test

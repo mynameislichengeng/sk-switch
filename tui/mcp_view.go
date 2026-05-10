@@ -30,15 +30,15 @@ func renderMCPViewPopup(mcp config.MCP, agents []config.MCPAgent, w, h int) stri
 	}
 
 	var lines []string
-	lines = append(lines, titleStyle.Render("MCP 分配详情"), "")
+	lines = append(lines, titleStyle.Render("MCP详情"), "")
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("名称  :"), mcp.Name))
 	lines = append(lines, fmt.Sprintf("%s %s", keyStyle.Render("GitHub:"), gh))
-	lines = append(lines, "", keyStyle.Render("配置 JSON:"))
+	lines = append(lines, "", keyStyle.Render("config:"))
 	for _, l := range strings.Split(cfg, "\n") {
 		lines = append(lines, "  "+l)
 	}
 
-	lines = append(lines, "", titleStyle.Render("已分配到的 agents"))
+	lines = append(lines, "", titleStyle.Render("分配AGENTS"), "")
 	if len(agents) == 0 {
 		lines = append(lines, popupNoteStyle.Render("  (没有配置 MCP agent — 切到 AGENTS 配置 tab 添加)"))
 	} else {

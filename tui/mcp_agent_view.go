@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,17 @@ type mcpAgentView struct {
 	// Tree mode state (nil in text mode).
 	tree *jsontree.Viewer
 
+	// Tree-mode search state (vim-style "/" + Enter, then `n` for next).
+	// searching=true means the user is currently typing the query in
+	// the input bar; once Enter commits, searching flips back to false
+	// and searchQuery sticks around so `n` can jump to subsequent hits.
+	// searchMessage carries a one-shot status line (e.g. "未找到 …") that
+	// the next tree-mode keystroke clears.
+	searching         bool
+	searchQuery       string
+	searchInputCursor int
+	searchMessage     string
+
 	// Text mode payload (kept so Resize can re-render at new width).
 	textRaw    string
 	textIsJSON bool
@@ -66,6 +78,10 @@ func (v *mcpAgentView) Open(ag config.MCPAgent, w, h int) tea.Cmd {
 	v.tree = nil
 	v.textRaw = ""
 	v.textIsJSON = false
+	v.searching = false
+	v.searchQuery = ""
+	v.searchInputCursor = 0
+	v.searchMessage = ""
 	v.viewport = viewport.New(w, h)
 	v.viewport.SetContent(lipgloss.NewStyle().Faint(true).Render("加载中…"))
 	return readMCPAgentFileCmd(ag, w)
@@ -76,8 +92,18 @@ func (v *mcpAgentView) Close() {
 	v.tree = nil
 	v.textRaw = ""
 	v.textIsJSON = false
+	v.searching = false
+	v.searchQuery = ""
+	v.searchInputCursor = 0
+	v.searchMessage = ""
 	v.err = ""
 }
+
+// IsSearching tells the parent whether the viewer is currently consuming
+// keystrokes for its search input bar — when true the parent must NOT
+// treat Esc / q as "close view", because those keys belong to the input
+// (Esc cancels search; q is just a typed character).
+func (v mcpAgentView) IsSearching() bool { return v.searching }
 
 func (v *mcpAgentView) Resize(w, h int) {
 	v.viewport.Width = w
@@ -152,6 +178,9 @@ func (v *mcpAgentView) Update(msg tea.Msg) tea.Cmd {
 		return cmd
 	}
 	if v.tree != nil {
+		if v.searching {
+			return v.handleSearchKey(km)
+		}
 		return v.handleTreeKey(km)
 	}
 	switch km.String() {
@@ -169,7 +198,11 @@ func (v *mcpAgentView) Update(msg tea.Msg) tea.Cmd {
 
 // handleTreeKey owns cursor + fold state. Anything we don't recognize is
 // forwarded to the viewport so PgUp/PgDn / mouse-wheel still scroll.
+//
+// Any keystroke clears searchMessage — the "未找到 …" hint is one-shot
+// and shouldn't linger past the next interaction.
 func (v *mcpAgentView) handleTreeKey(km tea.KeyMsg) tea.Cmd {
+	v.searchMessage = ""
 	switch km.String() {
 	case "up", "k":
 		v.tree.MoveUp()
@@ -181,6 +214,19 @@ func (v *mcpAgentView) handleTreeKey(km tea.KeyMsg) tea.Cmd {
 		v.tree.MoveBottom()
 	case " ", "enter":
 		v.tree.Toggle()
+	case "/":
+		v.searching = true
+		v.searchQuery = ""
+		v.searchInputCursor = 0
+		return nil
+	case "n":
+		// "find next" — only meaningful after a prior committed search.
+		if strings.TrimSpace(v.searchQuery) == "" {
+			return nil
+		}
+		if hit := v.tree.FindNext(v.searchQuery); hit == nil {
+			v.searchMessage = fmt.Sprintf("未找到「%s」", v.searchQuery)
+		}
 	default:
 		var cmd tea.Cmd
 		v.viewport, cmd = v.viewport.Update(km)
@@ -190,24 +236,106 @@ func (v *mcpAgentView) handleTreeKey(km tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// handleSearchKey routes keystrokes while the user is typing in the
+// search bar. The bar is a single-line rune buffer that supports the
+// usual cursor / backspace / delete actions; Enter commits a Find,
+// Esc cancels (cursor stays on whatever node it was on before "/").
+//
+// Esc and q here are NOT "close view" — that gate lives one layer up
+// in mcp_agents.go which checks IsSearching() before swallowing them.
+func (v *mcpAgentView) handleSearchKey(km tea.KeyMsg) tea.Cmd {
+	switch {
+	case keyPress(km, "esc"):
+		v.searching = false
+		v.searchQuery = ""
+		v.searchInputCursor = 0
+		v.searchMessage = ""
+		return nil
+	case keyPress(km, "enter"):
+		// Vim-style search: jump to the next match strictly after the
+		// current cursor (with wrap). This is FindNext, NOT Find from
+		// top — that way `/foo<CR>` and the subsequent `n` keys behave
+		// identically (each call advances), matching what vim/less
+		// users expect. On a fresh open the cursor is on root which
+		// never matches, so the first call still lands on the very
+		// first match in the tree.
+		v.searching = false
+		query := strings.TrimSpace(v.searchQuery)
+		if query == "" {
+			v.searchQuery = ""
+			return nil
+		}
+		if hit := v.tree.FindNext(v.searchQuery); hit == nil {
+			v.searchMessage = fmt.Sprintf("未找到「%s」", v.searchQuery)
+		} else {
+			v.searchMessage = ""
+		}
+		v.refreshTreeContent()
+		return nil
+	case keyPress(km, "left"):
+		if v.searchInputCursor > 0 {
+			v.searchInputCursor--
+		}
+	case keyPress(km, "right"):
+		if v.searchInputCursor < runeCount(v.searchQuery) {
+			v.searchInputCursor++
+		}
+	case keyPress(km, "home", "ctrl+a"):
+		v.searchInputCursor = 0
+	case keyPress(km, "end", "ctrl+e"):
+		v.searchInputCursor = runeCount(v.searchQuery)
+	case keyPress(km, "backspace"):
+		v.searchQuery, v.searchInputCursor = deleteBefore(v.searchQuery, v.searchInputCursor)
+	case keyPress(km, "delete"):
+		v.searchQuery, v.searchInputCursor = deleteAfter(v.searchQuery, v.searchInputCursor)
+	default:
+		if r := insertableRunes(km); r != nil {
+			v.searchQuery, v.searchInputCursor = insertAt(v.searchQuery, v.searchInputCursor, string(r))
+		}
+	}
+	return nil
+}
+
 func (v mcpAgentView) View(width int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true)
-	hintStyle := lipgloss.NewStyle().Faint(true)
 	header := titleStyle.Render(fmt.Sprintf("%s — %s", v.agent.Name, v.agent.Path))
-	hint := hintStyle.Render(v.hintText())
 	if v.err != "" {
 		errStyle := lipgloss.NewStyle().Foreground(theme.ModifiedFg)
 		body := errStyle.Render(v.err)
-		return header + "\n\n" + body + "\n\n" + hint
+		return header + "\n\n" + body + "\n\n" + lipgloss.NewStyle().Faint(true).Render(v.hintText())
 	}
-	return header + "\n" + v.viewport.View() + "\n" + hint
+	return header + "\n" + v.viewport.View() + "\n" + v.renderBottomBar()
+}
+
+// renderBottomBar picks the right footer for the current state. Three
+// possible faces: search input bar (highest priority — user is typing),
+// search status line (one-shot, e.g. "未找到 …"), or the regular hint
+// cheat-sheet.
+func (v mcpAgentView) renderBottomBar() string {
+	if v.searching {
+		return v.renderSearchBar()
+	}
+	if v.searchMessage != "" {
+		return lipgloss.NewStyle().Foreground(theme.ModifiedFg).Render(v.searchMessage)
+	}
+	return lipgloss.NewStyle().Faint(true).Render(v.hintText())
+}
+
+// renderSearchBar draws "/ <input>█    Enter 搜索 | Esc 取消" — the input
+// uses the shared cursor-render helper so caret behavior matches every
+// other text input in the app (popups, theme editor, etc.).
+func (v mcpAgentView) renderSearchBar() string {
+	label := popupActiveStyle.Render("/")
+	body := renderWithCursor(v.searchQuery, v.searchInputCursor)
+	tail := lipgloss.NewStyle().Faint(true).Render("    Enter 搜索 | Esc 取消")
+	return label + " " + body + tail
 }
 
 // hintText picks the appropriate key-cheat-sheet for the active mode.
-// Tree mode advertises fold keys; text mode is just scroll.
+// Tree mode advertises fold + search keys; text mode is just scroll.
 func (v mcpAgentView) hintText() string {
 	if v.tree != nil {
-		return "↑↓ 选 | Space/Enter 展开收起 | g/G 顶/底 | Esc 返回"
+		return "↑↓ 选 | Space/Enter 展开收起 | / 搜索 | n 下一个 | g/G 顶/底 | Esc 返回"
 	}
 	return "↑↓ 行 | PgUp/PgDn 翻页 | g/G 顶/底 | Esc 返回"
 }

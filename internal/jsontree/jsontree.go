@@ -319,6 +319,124 @@ func (v *Viewer) Collapse() {
 	}
 }
 
+// Find walks the tree in pre-order and returns the first node whose Key
+// (object children) or ScalarRaw (scalars) contains query as a
+// case-insensitive substring. On a hit: every ancestor is expanded so the
+// match becomes visible, the cursor moves to the match, and the cache is
+// invalidated.
+//
+// Returns nil and leaves all state untouched if no match is found, or if
+// query is empty after trimming. Use this on the user's "/" + Enter
+// commit — it's the "first match from the top" entry point.
+func (v *Viewer) Find(query string) *Node {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" || v.root == nil {
+		return nil
+	}
+	n, path := findFromAfter(v.root, nil, q)
+	if n == nil {
+		return nil
+	}
+	v.applyMatch(n, path)
+	return n
+}
+
+// FindNext returns the next match strictly after the current cursor in
+// pre-order, wrapping back to the top of the tree when no match remains
+// below. Same expand/cursor/cache semantics as Find. Returns nil only
+// when the tree contains no matches at all.
+//
+// Use this for `n` after a Find. If there is no current cursor (root was
+// nil), behaves exactly like Find.
+func (v *Viewer) FindNext(query string) *Node {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" || v.root == nil {
+		return nil
+	}
+	n, path := findFromAfter(v.root, v.cursor, q)
+	if n == nil {
+		// No more matches below — wrap from the top of the tree.
+		n, path = findFromAfter(v.root, nil, q)
+	}
+	if n == nil {
+		return nil
+	}
+	v.applyMatch(n, path)
+	return n
+}
+
+// applyMatch expands the path of ancestors so the matched node becomes
+// visible, moves the cursor to the match, and invalidates the cache.
+func (v *Viewer) applyMatch(n *Node, ancestors []*Node) {
+	for _, a := range ancestors {
+		if a.Kind == KindObject || a.Kind == KindArray {
+			a.Expanded = true
+		}
+	}
+	v.cursor = n
+	v.cacheDirty = true
+}
+
+// findFromAfter performs a pre-order DFS. When `after` is nil it returns
+// the first matching node from root. Otherwise it skips nodes until it
+// has visited `after`, then returns the next match strictly after it.
+// Path holds the matched node's ancestors (root-first), so the caller can
+// expand them.
+func findFromAfter(root, after *Node, lowerQuery string) (*Node, []*Node) {
+	if root == nil {
+		return nil, nil
+	}
+	var (
+		hit     *Node
+		hitPath []*Node
+	)
+	started := after == nil
+	var walk func(n *Node, path []*Node)
+	walk = func(n *Node, path []*Node) {
+		if hit != nil {
+			return
+		}
+		if started && matchNode(n, lowerQuery) {
+			hit = n
+			hitPath = append([]*Node(nil), path...)
+			return
+		}
+		// Mark `started` AFTER the match check at this node — that way a
+		// node never matches itself (FindNext("query") on a node that
+		// already matches advances past it instead of returning the same
+		// node).
+		if n == after {
+			started = true
+		}
+		if n.Kind == KindObject || n.Kind == KindArray {
+			childPath := append(path, n)
+			for _, c := range n.Children {
+				walk(c, childPath)
+				if hit != nil {
+					return
+				}
+			}
+		}
+	}
+	walk(root, nil)
+	return hit, hitPath
+}
+
+// matchNode returns true when the node's key or scalar content contains
+// the (already lower-cased) query as a substring. Containers without a
+// scalar value match only on key. The query must be lowercased by the
+// caller — keeping ToLower out of the hot path lets a single search
+// reuse the lowered string across thousands of node visits.
+func matchNode(n *Node, lowerQuery string) bool {
+	if n.Key != "" && strings.Contains(strings.ToLower(n.Key), lowerQuery) {
+		return true
+	}
+	if n.Kind == KindScalar && strings.Contains(strings.ToLower(n.ScalarRaw), lowerQuery) {
+		return true
+	}
+	return false
+}
+
 // foldable returns true when the node is a non-empty container. Hiding
 // the marker on empty containers (and rejecting fold ops on them) keeps
 // "expanded but no children" from ever being a possible state.

@@ -379,7 +379,7 @@ func (m MCPListModel) renderTopBar() string {
 }
 
 func (m MCPListModel) renderHelpLine() string {
-	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | 空格 查看分配 | r 刷新 | Tab 切换 | Ctrl+P 切模块 | q 退出")
+	txt := helpLineStyle.Render("a 新增 | e 编辑 | d 删除 | space 分配 | r 刷新 | Tab 切换 | Ctrl+P 切模块 | q 退出")
 	if m.width > 2 {
 		return lipgloss.PlaceHorizontal(m.width-2, lipgloss.Right, txt)
 	}

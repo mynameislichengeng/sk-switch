@@ -164,10 +164,13 @@ func (m MCPAgentsModel) handleList(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
 	return m, nil
 }
 
-// handleView routes keys while the config-file viewer is open. Esc/q close
-// it; everything else feeds the viewport for scrolling.
+// handleView routes keys while the config-file viewer is open. Esc/q
+// close it — EXCEPT when the viewer is currently in its search-input
+// state, where Esc cancels the search (and q is a typed character).
+// IsSearching() lets the viewer own those keys without us guessing
+// at its internal state.
 func (m MCPAgentsModel) handleView(km tea.KeyMsg) (MCPAgentsModel, tea.Cmd) {
-	if keyPress(km, "esc") || keyPress(km, "q") {
+	if !m.view.IsSearching() && (keyPress(km, "esc") || keyPress(km, "q")) {
 		m.view.Close()
 		return m, nil
 	}
